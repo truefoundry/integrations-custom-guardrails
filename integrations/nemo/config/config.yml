@@ -1,0 +1,21 @@
+colang_version: "1.0"
+
+models:
+  - type: main
+    engine: openai
+    model: ${JUDGE_MODEL}
+    parameters:
+      base_url: ${TFY_BASE_URL}
+      api_key: ${TFY_API_KEY}
+
+rails:
+  input:
+    flows:
+      - self check input
+  output:
+    flows:
+      - self check output
+
+# Don't waste tokens generating an answer when the wrapper is only running rails.
+# We disable dialog/output rails per-request in app/rails.py too.
+passthrough: True

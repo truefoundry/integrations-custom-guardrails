@@ -1,0 +1,8 @@
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27,<1.0
+pydantic>=2.5,<3.0
+python-dotenv>=1.0,<2.0
+
+# TODO: add your vendor SDK below. Pin loosely; pin to a GitHub tag if the
+# vendor's PyPI is unreliable.
+# <vendor-sdk>>=x.y,<NEXT_MAJOR
