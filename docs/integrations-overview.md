@@ -44,7 +44,7 @@ Heuristic validators (regex, classifier) are cheap and deterministic but context
 
 ## Reference integrations in this repo
 
-Two examples currently shipped — use them as canonical templates when adding a new vendor:
+Three integrations currently shipped — use them as canonical templates when adding a new vendor:
 
 ### NVIDIA NeMo Guardrails — LLM-judged rails
 
@@ -66,7 +66,19 @@ A Python framework with a catalog of pre-built validators distributed through th
 
 See [`/integrations/guardrails-ai/`](../integrations/guardrails-ai/) for the full implementation.
 
-### What the two illustrate together
+### Lasso Security — SaaS classify + classifix
+
+[Lasso Security](https://server.lasso.security) is a hosted AI security platform. This wrapper calls Lasso API v3 over HTTPS: `classify` for validate-only policy checks and `classifix` for validate-and-mask (PII redaction in place). Four endpoints map to input/output × validate/mutate.
+
+**Best at**: centralized policy enforcement via Lasso deputies (configured in the Lasso console), plus PII masking without blocking the request when Lasso returns mask spans or rewritten messages.
+
+**Cost**: one Lasso API round-trip per rail call (default 10s timeout). Latency depends on Lasso's service and the deputies active on your account.
+
+**Unique in this repo**: the only shipped integration with **mutate** rails (`classifix`). Register those Custom Guardrail Configs with `Operation: Mutate` in the dashboard.
+
+See [`/integrations/lasso-security/`](../integrations/lasso-security/) for the full implementation.
+
+### What the three illustrate together
 
 Different vendors catch different things — defense in depth matters.
 
@@ -103,7 +115,7 @@ Worth understanding when choosing a vendor:
 
 - **Pure open-source (NeMo example)**: `pip install` from public PyPI, fully self-hosted, no service relationship. No tokens. Wrapper code only.
 - **Open-source framework + private validator registry (Guardrails AI example)**: framework is free, but validators are gated behind a token. The token gets you install rights to a registry of Python packages — not a hosted service. You still need to deploy a wrapper that imports the packages.
-- **SaaS-only (Lakera, Robust Intelligence)**: vendor offers an HTTP API. Wrapper calls the API per request. Token is for the API. Latency includes a vendor round-trip.
+- **SaaS-only (Lasso Security, Lakera, Robust Intelligence)**: vendor offers an HTTP API. Wrapper calls the API per request. Token is for the API. Latency includes a vendor round-trip.
 - **Self-hostable model artifacts (Llama Guard, NeMo Llama Guard NIM)**: vendor distributes model weights. You host the model + a small inference wrapper. No vendor round-trip but you own the model serving.
 
 The wrapper pattern in this repo accommodates all four — what changes per vendor is the Dockerfile (system deps), the `setup.py` (build-time install), and the per-rail handler logic. The HTTP contract and the deploy.py shape stay the same.
@@ -130,14 +142,14 @@ If presenting this repo to a new team or partner:
 
 1. **Frame the problem (30s)**: AI Gateway needs guardrails. Custom (§2) is the right path for open-source, niche, or POC vendors. Native (§5) is for strategic SaaS vendors.
 2. **Show the architecture (60s)**: one FastAPI wrapper per vendor, behind the gateway's 2xx+verdict contract. Independent deploys; mix-and-match per model.
-3. **Show the two reference integrations (60s)**: NeMo (LLM-judged) and Guardrails AI (heuristic). Different costs, different catches.
+3. **Show the reference integrations (60s)**: NeMo (LLM-judged), Guardrails AI (heuristic), Lasso Security (SaaS validate + mutate). Different costs and capabilities.
 4. **Run the demo (90s)**: pick three prompts from `guardrail-test-phrases.md` — a benign one, a PII one (heuristic catches), a jailbreak (LLM-judged catches). Show how each rail behaves; emphasize defense-in-depth.
-5. **Point at the contributor flow (30s)**: `_template/` + the skill + `add-a-new-integration.md`. Adding a vendor #3 takes 1-2 days for a clean API.
+5. **Point at the contributor flow (30s)**: `_template/` + the skill + `add-a-new-integration.md`. Adding a new vendor takes 1-2 days for a clean API.
 
 ## Where to go next
 
 - **Add a new integration**: [`add-a-new-integration.md`](add-a-new-integration.md)
 - **Understand the HTTP contract**: [`gateway-contract.md`](gateway-contract.md)
 - **Demo prompts for any rail**: [`guardrail-test-phrases.md`](guardrail-test-phrases.md)
-- **Reference implementations**: [`/integrations/nemo/`](../integrations/nemo/), [`/integrations/guardrails-ai/`](../integrations/guardrails-ai/)
+- **Reference implementations**: [`/integrations/nemo/`](../integrations/nemo/), [`/integrations/guardrails-ai/`](../integrations/guardrails-ai/), [`/integrations/lasso-security/`](../integrations/lasso-security/)
 - **Full Claude-friendly playbook**: [`/.claude/skills/truefoundry-custom-guardrail/`](../.claude/skills/truefoundry-custom-guardrail/)

@@ -1,6 +1,6 @@
 # Working dir context — tfy-custom-guardrails
 
-Monorepo for TrueFoundry AI Gateway custom-guardrail integrations. Each `integrations/<vendor>/` is an independently-deployable FastAPI service that conforms to the gateway's [`docs/gateway-contract.md`](docs/gateway-contract.md). Two reference integrations ship in the repo today: `integrations/nemo/` (LLM-judged) and `integrations/guardrails-ai/` (local heuristic validators).
+Monorepo for TrueFoundry AI Gateway custom-guardrail integrations. Each `integrations/<vendor>/` is an independently-deployable FastAPI service that conforms to the gateway's [`docs/gateway-contract.md`](docs/gateway-contract.md). Three integrations ship in the repo today: `integrations/nemo/` (LLM-judged), `integrations/guardrails-ai/` (local heuristic validators), and `integrations/lasso-security/` (Lasso Security SaaS classify + classifix).
 
 This file is the **starting point** for any Claude Code session opened in this directory. Inline facts below cover the common questions; cross-refs link to deep material.
 
@@ -19,7 +19,8 @@ tfy-custom-guardrails/
 └── integrations/
     ├── _template/                               Skeleton for new integrations
     ├── nemo/                                    NVIDIA NeMo Guardrails (example: LLM-judged)
-    └── guardrails-ai/                           Guardrails AI Hub validators (example: heuristic)
+    ├── guardrails-ai/                           Guardrails AI Hub validators (example: heuristic)
+    └── lasso-security/                          Lasso Security API v3 (example: SaaS validate + mutate)
 ```
 
 ## The custom-guardrail HTTP contract (MEMORIZE)
@@ -117,6 +118,23 @@ Vendor gotchas:
 - **Hub validators install at Docker build time** via `setup.py` (build arg for the Hub token). Token not present at runtime.
 - **Context-sensitive accuracy gaps**: Presidio's SSN needs context-word boosting; detect-secrets is tuned for code, not prose. See `integrations/guardrails-ai/docs/DESIGN.md` "Known accuracy gaps".
 
+### Lasso Security (`integrations/lasso-security/`)
+
+Four per-rail endpoints wrapping Lasso API v3 `classify` (validate) and `classifix` (mutate). Forwards gateway traffic to Lasso's hosted deputies for policy enforcement and PII masking. SaaS round-trip per request; default timeout 10s.
+
+- **Endpoints**: `/health`, `/debug/runtime-config`, plus 4 rails:
+  `POST /lasso-classify`, `POST /lasso-classify-output`, `POST /lasso-classifix`, `POST /lasso-classifix-output`
+- **Operations**: classify rails → dashboard `Operation: Validate`; classifix rails → `Operation: Mutate`
+- **Deploy**: `cd integrations/lasso-security && .venv/bin/python deploy.py --wait`
+- **Repo docs**: `integrations/lasso-security/{README.md, docs/DESIGN.md, docs/public-docs-lasso-security.md}`
+
+Vendor gotchas:
+- **Lasso API key** via deploy secret `LASSO_API_KEY` or per-request `config.credentials.apiKey` in the dashboard Config JSON.
+- **Session continuity**: wrapper forwards `sessionId` from `config.sessionId` or `context.metadata` (`session_id`, `sessionId`, `lasso-conversation-id`); otherwise generates a UUID per call.
+- **Validate verdict**: only `action: BLOCK` findings block; `WARN`-only violations pass through.
+- **Mutate path**: classifix applies Lasso-returned masked messages or span masks from findings; BLOCK findings without mask metadata still deny even on mutate rails.
+- **Debug endpoint** is `/debug/runtime-config` (not `/debug/loaded-config`).
+
 ## Reusable skill
 
 `.claude/skills/truefoundry-custom-guardrail/` is the **full playbook** for adding a new custom-guardrail integration end-to-end:
@@ -133,6 +151,6 @@ Packaged zip at `.claude/skills/truefoundry-custom-guardrail.skill` for claude.a
 
 Don't accidentally redo these:
 
-- **Mutation mode** (PII redaction-in-place, output rewriting) is a v2 candidate — not built in either reference integration.
+- **Mutation mode** (PII redaction-in-place) is implemented in `integrations/lasso-security/` via Lasso `classifix` rails (`Operation: Mutate`). NeMo and Guardrails AI remain validate-only.
 - **Per-tenant config via `req.config.config_id`** is a v2 candidate — not built.
 - **Tenant gateway version dependency**: the 2xx+verdict contract requires `tfy-llm-gateway` commit `a1c551be` or later. Smoke-test on a new tenant before relying on the new shape; older gateways need `Fail on error: true` and the wrapper must use the legacy 4xx-block path.

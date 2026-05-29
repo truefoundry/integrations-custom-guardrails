@@ -148,7 +148,7 @@ This repo deliberately avoids a `shared/` directory. Each integration carries it
 
 1. **Per-vendor dependency pins**. NeMo wants `nemoguardrails 0.21+`; Guardrails AI wants pinned-from-GitHub `0.9.3`. Forcing a shared venv would mean fighting transitive dep conflicts.
 2. **Independent deployability**. Each integration is a separate TFY Service. A bad commit in the shared `entities.py` cannot break someone else's deploy if there is no shared `entities.py`.
-3. **Discoverability over DRY**. New integrators benefit more from "copy the working `_template/` and edit" than from "trace through a shared abstraction." The duplication is bounded (~200 lines across two integrations today).
+3. **Discoverability over DRY**. New integrators benefit more from "copy the working `_template/` and edit" than from "trace through a shared abstraction." The duplication is bounded (~200 lines per integration; three integrations today).
 4. **Per-integration freedom to diverge**. If a future vendor's message-shape handling needs a different `last_user_text` (e.g. for MCP payloads), that integration can change its copy without coordinating with others.
 
 The cost is contract drift: if `entities.py` evolves in one integration but not another, they're out of sync. Mitigations:

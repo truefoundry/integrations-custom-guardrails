@@ -9,7 +9,7 @@ Step-by-step playbook. Estimated time: 1–2 days for a vendor with a clean API;
 - A cluster with a configured base host (visible at **Integrations → Clusters → \<cluster\>** in the TFY dashboard).
 - This repo cloned locally.
 - Read [`gateway-contract.md`](gateway-contract.md) — that's the contract you're conforming to.
-- Skim the two existing integrations (`integrations/nemo/`, `integrations/guardrails-ai/`) — they're worked examples of the pattern.
+- Skim the existing integrations (`integrations/nemo/`, `integrations/guardrails-ai/`, `integrations/lasso-security/`) — they're worked examples of the pattern.
 
 For deeper guidance: the [`.claude/skills/truefoundry-custom-guardrail/`](../.claude/skills/truefoundry-custom-guardrail/) skill is the full 7-phase playbook. Read `SKILL.md` and the four reference files in `references/` if you're integrating a non-trivial vendor.
 
