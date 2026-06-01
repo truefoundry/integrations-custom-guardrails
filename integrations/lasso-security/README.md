@@ -82,7 +82,11 @@ docker build -t lasso-guardrails-tfy .
 docker run --rm -p 8000:8000 --env-file .env lasso-guardrails-tfy
 ```
 
-## Deploy to TrueFoundry
+## Deploy the wrapper
+
+The wrapper is a standard Docker container. Host it anywhere Docker runs and is reachable from your TFY Gateway (ECS, Cloud Run, Kubernetes, on-prem, or as a TrueFoundry Service via the included `deploy.py`). One example:
+
+### Example: TrueFoundry Service
 
 1. Create secret group `lasso-guardrails-tfy` with `lasso-api-key` and `wrapper-api-key`
 2. Fill deploy fields in `.env`, then:
@@ -92,6 +96,10 @@ pip install -U truefoundry
 tfy login
 python deploy.py --wait
 ```
+
+### Example: any other host
+
+`docker build -t lasso-guardrails-tfy .`, run it with `LASSO_API_KEY` and `WRAPPER_API_KEY` set, route a public HTTPS URL to port 8000, and skip to step 3 below.
 
 3. Register four Custom Guardrail Configs in **AI Gateway → Guardrails**:
 

@@ -25,7 +25,7 @@ So we adapt: we don't use NeMo as an LLM — we use it as a rail runner.
 
 ## Why a thin Python wrapper (vs. alternatives)
 
-Three integration paths were considered. See the team's "Gateway Integrations - Support SOP":
+Three integration paths were considered:
 
 | Path | What | Verdict |
 |---|---|---|
@@ -33,7 +33,7 @@ Three integration paths were considered. See the team's "Gateway Integrations - 
 | B. NeMo's own server as a Custom Endpoint | Run `nemoguardrails server` and register its OpenAI-compat endpoint. | Architecturally wrong — NeMo becomes "the model," not a guardrail. Loses gateway-side cost tracking and prevents other guardrails from running on the route. |
 | C. Native plugin in `tfy-llm-gateway` | Add `src/plugins/nvidia-nemo-guardrails/` + sf-server CUE schema, mirroring `grayswan-cygnal` / `google-model-armor`. | Significant engineering across two repos. Worth doing later if demand is sustained; gated on sf-server access. |
 
-The SOP itself recommends starting with the custom path while a native path is in flight, and to use the custom path "while we are still validating product-market fit for the integration."
+The custom wrapper is the right starting point while product-market fit for the integration is still being validated; a native plugin can replace it later without affecting the dashboard configuration or calling apps.
 
 ## Architecture
 
@@ -254,4 +254,4 @@ In rough order of payoff:
 2. Support multiple named rail bundles selectable per request via `config.config_id`. Useful for tenant-specific or team-specific policy variants.
 3. Add a content-safety NIM rail (Llama Guard via NVIDIA NGC) as an alternative to LLM-judged self-checks for high-volume routes where latency matters.
 4. Verdict cache for high-volume identical-prompt scenarios (e.g. health-check probes, deduplicated agent traffic).
-5. If demand justifies it, promote to a native plugin in `tfy-llm-gateway` (SOP §5). Reuse this wrapper's verdict-mapping logic verbatim in the plugin handler.
+5. If demand justifies it, promote to a native plugin in `tfy-llm-gateway`. Reuse this wrapper's verdict-mapping logic verbatim in the plugin handler.

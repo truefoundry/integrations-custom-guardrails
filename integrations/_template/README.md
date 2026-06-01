@@ -52,10 +52,16 @@ cp .env.example .env  # fill in
 
 ## Deploy
 
+The wrapper is a standard Docker container. Host it on any runtime that can serve HTTPS on a stable URL and is reachable from the TFY Gateway — ECS, Cloud Run, Kubernetes, on-prem, or as a TrueFoundry Service via the included `deploy.py` example.
+
+**Example: deploy as a TrueFoundry Service** (one option among many):
+
 ```bash
 .venv/bin/pip install -U truefoundry
 tfy login
 .venv/bin/python deploy.py --wait
 ```
+
+**Example: deploy anywhere else** — build the image and run it on your platform of choice with `WRAPPER_API_KEY` and any vendor env vars set, port `8000` exposed. The only thing the TFY Gateway needs is the resulting public HTTPS URL.
 
 See [`docs/add-a-new-integration.md`](../../docs/add-a-new-integration.md) for the full onboarding flow including dashboard registration and end-to-end verification.

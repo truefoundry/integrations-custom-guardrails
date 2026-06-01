@@ -1,6 +1,8 @@
-# TrueFoundry Deployment Playbook
+# Hosting Playbook — Example: TrueFoundry Service
 
-How to deploy the wrapper as a TFY Service via the Python SDK. The SDK has several footguns; this file documents every one we hit on a real build.
+The wrapper is a standard Docker container and can run on any runtime that serves HTTPS on a stable URL reachable from the TFY Gateway. This playbook documents one example hosting flow: deploying the wrapper as a TrueFoundry Service via the TrueFoundry Python SDK. If you're hosting elsewhere (ECS / Fargate, Cloud Run, GKE / EKS / AKS, on-prem Kubernetes, etc.), skip directly to the dashboard-registration step in the integration's README — only the public URL matters to the gateway.
+
+The TrueFoundry Python SDK has several footguns; this file documents every one we hit on a real TFY-Service build, so the example below is safe to copy.
 
 ## The `deploy.py` template
 

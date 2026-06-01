@@ -1,22 +1,22 @@
 ---
 name: truefoundry-custom-guardrail
-description: Build a new custom guardrail integration for the TrueFoundry AI Gateway by wrapping a vendor's library or service behind a small FastAPI wrapper that conforms to TFY's custom-guardrail HTTP contract. Use this skill when the user asks to integrate ANY guardrail vendor (NVIDIA NeMo Guardrails, Llama Guard, Lakera, Robust Intelligence, ShieldGemma, custom PII filters, internal policy engines, in-house safety classifiers, etc.) with TrueFoundry as a §2 Custom Guardrail (per the team Gateway Integrations Support SOP). Also trigger when the user says "add X as a guardrail to truefoundry", "wrap X as a guardrail", "integrate X with tfy guardrails", "build a custom guardrail for tfy", or references the truefoundry/custom-guardrails-template repo. This skill encodes the wrapper architecture and the gateway's verdict semantics and the deployment playbook and every gotcha learned from a real end-to-end build (NeMo Guardrails, May 2026).
+description: Build a new custom guardrail integration for the TrueFoundry AI Gateway by wrapping a vendor's library or service behind a small FastAPI wrapper that conforms to TFY's custom-guardrail HTTP contract. Use this skill when the user asks to integrate ANY guardrail vendor (NVIDIA NeMo Guardrails, Llama Guard, Lakera, Robust Intelligence, ShieldGemma, custom PII filters, internal policy engines, in-house safety classifiers, etc.) with TrueFoundry as a custom guardrail. Also trigger when the user says "add X as a guardrail to truefoundry", "wrap X as a guardrail", "integrate X with tfy guardrails", "build a custom guardrail for tfy", or references the truefoundry/custom-guardrails-template repo. This skill encodes the wrapper architecture, the gateway's verdict semantics, an example hosting playbook, and every gotcha learned from real end-to-end builds.
 ---
 
 # TrueFoundry Custom Guardrail Integration
 
 You are building a new Custom Guardrail for the TrueFoundry AI Gateway. The pattern is always the same: a small stateless FastAPI wrapper exposes two POST endpoints that conform to TFY's custom-guardrail HTTP contract. The wrapper calls the vendor's library or API internally and returns a verdict. The gateway calls the wrapper at the `llm_input` and `llm_output` hooks.
 
-Default to this skill when the integration meets any of: the vendor is open-source or self-hosted, the vendor exposes a Python library or generic HTTP API, the customer is "still validating product-market fit", or the team needs to ship today. For a SaaS vendor that meets the SOP's "native" criteria (strategic / well-known / POC ask), consider §5 native guardrail instead — but the wrapper path is almost always the right first move.
+Default to this skill when the integration meets any of: the vendor is open-source or self-hosted, the vendor exposes a Python library or generic HTTP API, you're validating product-market fit before investing in a deeper integration, or you need to ship today. For a SaaS vendor with broad demand and a stable API where it's worth building a native gateway plugin in `tfy-llm-gateway` itself, the native path is a longer-term fit — but the custom-guardrail wrapper is almost always the right first move and proves the integration value before any cross-repo work.
 
 ## Before starting
 
 1. **Read all the reference files.** Order matters:
    - `references/wrapper-architecture.md` — the canonical wrapper shape (FastAPI structure, endpoints, verdict mapping).
    - `references/gateway-contract.md` — what TFY actually expects on the HTTP wire. There are non-obvious quirks; don't guess.
-   - `references/deployment-playbook.md` — TFY Service deployment via the Python SDK. The SDK has several footguns documented here.
+   - `references/deployment-playbook.md` — hosting the wrapper as a TrueFoundry Service via the Python SDK (one example hosting flow; the wrapper can also run anywhere else Docker runs). The SDK has several footguns documented here.
    - `references/gotchas.md` — distilled hard-won lessons from the NeMo Guardrails integration. Read end-to-end before starting; some apply across phases.
-2. **Confirm the integration meets the SOP's "custom" criteria.** If it's a Fortune-500 ask, a frontier safety vendor, or a POC explicitly naming the brand, push back gently and propose §5 native instead. Otherwise proceed.
+2. **Confirm the custom-guardrail wrapper is the right approach.** It almost always is for the cases this skill targets (open-source / self-hosted / niche / early-stage vendors). For a SaaS vendor with broad demand where a native gateway plugin would be the longer-term fit, the custom wrapper is still the right first move — it ships faster and proves the integration value before deeper work.
 3. **Gather user inputs.** Use AskUserQuestion to clarify before you start coding:
    - Vendor name and what its rails do (input validation, output validation, both, mutation vs pure validate).
    - Vendor API surface (Python library, REST API, hosted service).
@@ -82,11 +82,13 @@ Required cases:
 - One unambiguous unsafe output → 200 + `{"verdict": false, "message": "..."}`.
 - `/debug/loaded-config` returns the expected route list / loaded config.
 
-## Phase 4 — Deploy to TrueFoundry
+## Phase 4 — Host the wrapper
 
-Use the TFY Python SDK with a `deploy.py` at the repo root. Critical SDK gotchas are in `references/deployment-playbook.md`. Read them all; each one cost real time during the NeMo build.
+The wrapper is a standard Docker container. Host it on any runtime that can serve HTTPS on a stable URL reachable from the TFY Gateway — ECS / Fargate, Cloud Run, GKE / EKS / AKS, on-prem Kubernetes, Fly.io / Railway, or a TrueFoundry Service via the included `deploy.py`. The gateway only cares about the resulting URL; pick whichever host fits the user's infrastructure.
 
-Key points (full detail in playbook):
+This repo ships a working example: a TFY Service deploy via the TrueFoundry Python SDK. If the user picks that path, write a `deploy.py` at the repo root following `references/deployment-playbook.md`. If the user picks another host, they can skip the SDK entirely — just build the image, run it, and continue to Phase 5 with the resulting public URL.
+
+Key points for the TFY-Service example (full detail in playbook):
 - `load_dotenv(override=True)` — without `override=True`, stale shell values silently win over `.env`.
 - Pop `TFY_API_KEY` and `WRAPPER_API_KEY` from `os.environ` after `load_dotenv()` — the SDK reserves `TFY_API_KEY` for its own auth and will refuse to use the `tfy login` session if it sees them in env.
 - `Service.image` needs `Build(build_spec=DockerFileBuild(...))`, not bare `DockerFileBuild(...)`.
@@ -94,6 +96,8 @@ Key points (full detail in playbook):
 - Add an early `_check_placeholders()` that fails loudly if any `<...>` placeholder string is still in any required field.
 
 Set both env vars (LLM auth, judge model, base URL) and secret refs (`<*>_SECRET_FQN`) in the Service env dict. Real values go in `.env` for local dev. The TFY dashboard secret values must match what you set in `.env` if you want local and deployed behavior to match — sync after the first deploy.
+
+For non-TFY hosts: the runtime needs `WRAPPER_API_KEY` plus any vendor-specific env vars set, and port 8000 exposed (`uvicorn main:app --port 8000` is the entrypoint).
 
 ## Phase 5 — Register in the gateway
 
@@ -129,7 +133,7 @@ Produce four artifacts (no more, no less):
 3. **`docs/blog-<vendor>.md`** — technical blog draft for truefoundry.com/blog. Use the `truefoundry-integration-blog` skill if available (it has hard style rules: no comma-grouping, no marketing language, architecture-first). 1500-2500 words.
 4. **`docs/public-docs-<vendor>.md`** — end-user setup guide for truefoundry.com/docs/ai-gateway/.... Tutorial style: prerequisites, step-by-step, test, troubleshooting, known limitations, reference table. ~1500-2000 words.
 
-The SOP doesn't formally require any of these, but every existing TFY integration has all four (or close to it). Skipping any of them is a real handoff cost to whoever maintains the integration after you.
+None of these are formally required, but every existing TFY integration in this repo has all four (or close to it). Skipping any of them is a real handoff cost to whoever maintains the integration after you.
 
 ## Hard rules
 

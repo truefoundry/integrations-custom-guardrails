@@ -2,7 +2,7 @@
 
 This repo holds **custom-guardrail integrations** for the TrueFoundry AI Gateway. Each integration is a small HTTP wrapper service that conforms to the gateway's [custom-guardrail contract](gateway-contract.md) and runs a third-party safety/policy engine (PII detector, toxicity classifier, jailbreak guard, etc.) behind two hooks the gateway exposes: `llm_input` and `llm_output`.
 
-The repo is structured for many integrations side-by-side. Each lives under `integrations/<vendor>/` with its own Dockerfile, deps, deploy script, and docs — independently deployable as a TrueFoundry Service. See [`add-a-new-integration.md`](add-a-new-integration.md) for the contributor playbook.
+The repo is structured for many integrations side-by-side. Each lives under `integrations/<vendor>/` with its own Dockerfile, deps, deploy script, and docs — independently hostable wherever Docker runs (ECS, Cloud Run, Kubernetes, on-prem, dev laptop, or as a TrueFoundry Service via the included `deploy.py` example). See [`add-a-new-integration.md`](add-a-new-integration.md) for the contributor playbook.
 
 ## What a custom-guardrail integration is
 
@@ -16,14 +16,14 @@ The gateway honors the verdict before the model is called (input block → model
 
 ## Why a custom guardrail and not something else
 
-The TrueFoundry SOP defines five integration paths (§1–§5). Custom guardrails (§2) are the right choice when:
+Custom guardrails are the right choice when:
 
 - The vendor is open-source / self-hosted / niche, OR
-- The vendor doesn't have a SaaS API the gateway can call directly, OR
-- You're validating product-market fit before promoting to a native plugin (§5), OR
-- You need vendor-specific behavior the native paths don't support.
+- The vendor doesn't have a SaaS API the TrueFoundry Gateway already speaks natively, OR
+- You're validating product-market fit before investing in a deeper integration, OR
+- You need vendor-specific behavior the native gateway plugins don't support.
 
-For SaaS-only vendors with structured APIs and broad demand (Patronus, GraySwan, etc.), the native guardrail path (§5) is usually a better fit. See the team SOP for the full decision tree.
+For SaaS-only vendors with structured APIs and broad demand, a native gateway plugin (built into `tfy-llm-gateway` itself) is usually a better long-term fit. The custom path is the right place to start in either case — it ships faster and proves the integration value before any cross-repo work.
 
 ## How integrations differ — categories of risk
 
@@ -96,7 +96,7 @@ Neither layer is sufficient alone. Both together cover both adversarial framing 
 For each integration, the architecture is **identical**:
 
 1. A small FastAPI wrapper service with health + debug endpoints + one POST endpoint per rail-direction.
-2. Deployed as a **TrueFoundry Service** with a Dockerfile build.
+2. Packaged as a Docker container — hosted anywhere that runs Docker and is reachable from the TFY Gateway (one example included: a TrueFoundry Service deploy via `deploy.py`).
 3. Registered as a **Custom Guardrail Config** in the AI Gateway dashboard, one per rail.
 4. Applied to traffic via dashboard pin to a model OR per-request `X-TFY-GUARDRAILS` header.
 
@@ -104,7 +104,7 @@ The wrapper's job is to translate between TrueFoundry's [custom-guardrail HTTP c
 
 Each integration includes:
 
-- A `Dockerfile` and a TrueFoundry `deploy.py` (Python SDK).
+- A `Dockerfile` and an example `deploy.py` (TrueFoundry Python SDK — one of many hosting options).
 - A pytest suite covering health, auth, short-circuits, and verdict cases.
 - Per-integration `docs/`: a `DESIGN.md`, a draft technical blog, and an end-user docs page.
 - Per-integration auth between gateway and wrapper via a shared bearer token (one secret per wrapper).
@@ -140,7 +140,7 @@ The wrapper pattern in this repo accommodates all four — what changes per vend
 
 If presenting this repo to a new team or partner:
 
-1. **Frame the problem (30s)**: AI Gateway needs guardrails. Custom (§2) is the right path for open-source, niche, or POC vendors. Native (§5) is for strategic SaaS vendors.
+1. **Frame the problem (30s)**: AI Gateway needs guardrails. The custom-guardrail path is the right choice for open-source, niche, or early-stage vendors; native gateway plugins are a longer-term fit for vendors with broad demand and stable APIs.
 2. **Show the architecture (60s)**: one FastAPI wrapper per vendor, behind the gateway's 2xx+verdict contract. Independent deploys; mix-and-match per model.
 3. **Show the reference integrations (60s)**: NeMo (LLM-judged), Guardrails AI (heuristic), Lasso Security (SaaS validate + mutate). Different costs and capabilities.
 4. **Run the demo (90s)**: pick three prompts from `guardrail-test-phrases.md` — a benign one, a PII one (heuristic catches), a jailbreak (LLM-judged catches). Show how each rail behaves; emphasize defense-in-depth.

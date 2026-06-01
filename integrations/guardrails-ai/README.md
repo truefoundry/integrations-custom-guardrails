@@ -121,9 +121,11 @@ docker build --build-arg GUARDRAILS_TOKEN="$GUARDRAILS_TOKEN" -t guardrails-ai-t
 docker run --rm -p 8000:8000 --env-file .env guardrails-ai-tfy
 ```
 
-## Deploy to TrueFoundry
+## Deploy the wrapper
 
-### A. Create secrets
+The wrapper is a standard Docker container. Host it on any runtime that can serve HTTPS on a stable URL reachable from your TFY Gateway — ECS / Fargate, Cloud Run, GKE / EKS / AKS, on-prem Kubernetes, or as a TrueFoundry Service via the included `deploy.py`. The example below is one option.
+
+### A. Create secrets (example: TrueFoundry)
 
 Dashboard → **Platform → Secrets → + Secret Group `guardrails-ai-tfy`**:
 
@@ -134,7 +136,9 @@ Dashboard → **Platform → Secrets → + Secret Group `guardrails-ai-tfy`**:
 
 Paste each FQN into `.env`.
 
-### B. Deploy
+If you host elsewhere, pass `GUARDRAILS_TOKEN` as a Docker build arg (consumed at build time only) and `WRAPPER_API_KEY` as a runtime env var.
+
+### B. Deploy (example: TrueFoundry)
 
 ```bash
 pip install -U truefoundry
@@ -143,6 +147,8 @@ python deploy.py --wait
 ```
 
 The first build is slow (~5 min) because validators pull HuggingFace models. Subsequent builds use TFY's image layer cache.
+
+For other hosts: `docker build --build-arg GUARDRAILS_TOKEN=... -t guardrails-ai-tfy .`, run with `WRAPPER_API_KEY` set, and route a public HTTPS URL to port 8000.
 
 ### C. Register as Custom Guardrails
 

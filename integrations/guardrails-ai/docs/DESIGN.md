@@ -21,7 +21,7 @@ The wrapper shape is the canonical one from the `truefoundry-custom-guardrail` s
 
 ## Why a thin Python wrapper (vs. alternatives)
 
-Three integration paths were considered. See the team's "Gateway Integrations - Support SOP":
+Three integration paths were considered:
 
 | Path | What | Verdict |
 |---|---|---|
@@ -215,4 +215,4 @@ In rough order of payoff:
 3. Track Guardrails AI's PyPI quarantine status; switch back to plain `pip install guardrails-ai` when restored.
 4. Eliminate the `GUARDRAILS_TOKEN` exposure in build logs by switching from Docker `ARG` to BuildKit `--mount=type=secret`. Docker buildkit itself warns about this (`SecretsUsedInArgOrEnv`).
 5. Slim the image — current ~6.8 GB image has hit ACR push timeouts once. Multi-stage build dropping `apt`/`pip`/`uv` caches + lazy-loading HF model weights instead of baking them in.
-6. Promote to a native plugin in `tfy-llm-gateway` (SOP §5) if demand justifies. Validator translation logic stays the same; lives in `src/plugins/guardrails-ai/` instead of in this HTTP wrapper.
+6. Promote to a native plugin in `tfy-llm-gateway` if demand justifies. Validator translation logic stays the same; lives in `src/plugins/guardrails-ai/` instead of in this HTTP wrapper.

@@ -84,6 +84,8 @@ Documented in [`.claude/skills/truefoundry-custom-guardrail/references/deploymen
 
 ## Reference integrations — vendor-specific quick facts
 
+The `**Deploy**:` line in each quick-fact block is the TFY-hosted example via the included `deploy.py`. The wrapper itself is a plain Docker container — host it wherever you want (ECS, Cloud Run, Kubernetes, on-prem) and register the resulting public URL as a Custom Guardrail in the TFY Gateway dashboard.
+
 ### NeMo Guardrails (`integrations/nemo/`)
 
 LLM-judged input + output rails. Catches **jailbreaks, role-play attacks, system-prompt extraction, policy evasion** via NeMo's `self_check_input` / `self_check_output` flows. Judge LLM call routed back through the TFY gateway for unified audit trail.
