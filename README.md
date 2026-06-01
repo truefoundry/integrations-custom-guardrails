@@ -14,6 +14,7 @@ Each `integrations/<vendor>/` directory is an independently-deployable FastAPI s
 |---|---|---|
 | [`integrations/nemo/`](integrations/nemo/) | NVIDIA NeMo Guardrails (LLM-judged rails) | `/self-check-input`, `/self-check-output` |
 | [`integrations/guardrails-ai/`](integrations/guardrails-ai/) | Guardrails AI Hub validators (local heuristics) | `/detect-pii-{input,output}`, `/secrets-present-{input,output}`, `/toxic-language-{input,output}`, `/profanity-free-output` |
+| [`integrations/lasso-security/`](integrations/lasso-security/) | [Lasso Security](https://server.lasso.security) API v3 (SaaS classify + classifix) | `/lasso-classify`, `/lasso-classify-output`, `/lasso-classifix`, `/lasso-classifix-output` |
 
 Each integration's deployed URL is configured in its own `deploy.py` (`TFY_PUBLIC_HOST` + `TFY_PUBLIC_PATH`) and varies by tenant. The `deploy.py` prints the resolved URLs after a successful run.
 
@@ -35,7 +36,8 @@ tfy-custom-guardrails/
 └── integrations/
     ├── _template/                  Skeleton — `cp -r _template/ <new-vendor>/`
     ├── nemo/                       NVIDIA NeMo Guardrails wrapper (example)
-    └── guardrails-ai/              Guardrails AI Hub validators wrapper (example)
+    ├── guardrails-ai/              Guardrails AI Hub validators wrapper (example)
+    └── lasso-security/             Lasso Security classify/classifix wrapper (SaaS)
 ```
 
 ## Design principle
