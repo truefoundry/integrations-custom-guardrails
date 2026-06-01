@@ -24,13 +24,13 @@ The wrapper translates between the gateway's OpenAI-shaped bodies and Lasso's JS
 
 ## Why a thin Python wrapper (vs. alternatives)
 
-Three integration paths were considered. See the team's "Gateway Integrations - Support SOP":
+Three integration paths were considered:
 
 | Path | What | Verdict |
 |---|---|---|
 | **A. Custom guardrail wrapper** (this repo) | FastAPI service that POSTs to Lasso API v3 per rail. | **Chosen.** Zero changes to `tfy-llm-gateway`. Ships now. |
 | B. Lasso as a Custom Endpoint | Register Lasso's own server URL as the model endpoint. | Wrong shape — Lasso is not the LLM; guardrails must run at the gateway hooks. |
-| C. Native plugin in `tfy-llm-gateway` | Add `src/plugins/lasso-security/`. | Cross-repo work; defer until demand justifies native §5 promotion. |
+| C. Native plugin in `tfy-llm-gateway` | Add `src/plugins/lasso-security/`. | Cross-repo work; defer until demand justifies a native gateway plugin. |
 
 Lasso is SaaS-only with a structured HTTP API — a strong fit for the custom-guardrail path while validating product-market fit.
 
@@ -158,4 +158,4 @@ Unlike NeMo and Guardrails AI, rail handlers live in a single `guardrail/lasso.p
 
 1. Pytest smoke suite (`tests/test_smoke.py`) with mocked Lasso responses — pattern from `integrations/_template/`.
 2. Per-tenant deputy selection via `config` if Lasso exposes that in API v3.
-3. Native plugin promotion (SOP §5) if Lasso becomes a strategic integration — HTTP mapping logic stays the same.
+3. Promote to a native plugin in `tfy-llm-gateway` if Lasso becomes a strategic integration — HTTP mapping logic stays the same.

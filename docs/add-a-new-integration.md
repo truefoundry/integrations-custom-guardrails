@@ -4,9 +4,9 @@ Step-by-step playbook. Estimated time: 1–2 days for a vendor with a clean API;
 
 ## Prerequisites
 
-- A TrueFoundry workspace you can deploy services into.
+- Somewhere to host a Docker container with a public HTTPS endpoint reachable from your TFY Gateway (ECS, Cloud Run, Kubernetes, on-prem, a TrueFoundry workspace, etc.).
+- Access to a TFY Gateway dashboard where you can register a Custom Guardrail Config.
 - The vendor's credentials/API key (or whatever auth they require).
-- A cluster with a configured base host (visible at **Integrations → Clusters → \<cluster\>** in the TFY dashboard).
 - This repo cloned locally.
 - Read [`gateway-contract.md`](gateway-contract.md) — that's the contract you're conforming to.
 - Skim the existing integrations (`integrations/nemo/`, `integrations/guardrails-ai/`, `integrations/lasso-security/`) — they're worked examples of the pattern.
@@ -107,7 +107,18 @@ cp .env.example .env  # fill in
 .venv/bin/pytest -v tests/
 ```
 
-## Phase 3 — Deploy to TrueFoundry
+## Phase 3 — Host the wrapper
+
+The wrapper is a standard Docker container. Build it once (`docker build .`) and host it on any runtime that:
+
+1. Can serve HTTPS on a stable URL, and
+2. Is reachable from the TFY Gateway.
+
+Common hosting options: ECS / Fargate, Cloud Run, GKE / EKS / AKS, on-prem Kubernetes, Fly.io / Railway, or a TrueFoundry Service (example below). Pick whichever fits your infrastructure — the gateway only cares about the resulting URL.
+
+### Example: host as a TrueFoundry Service
+
+Each integration in this repo ships a `deploy.py` that uses the TrueFoundry Python SDK to deploy the wrapper as a TFY Service. To use it:
 
 ```bash
 .venv/bin/pip install -U truefoundry
@@ -115,13 +126,23 @@ tfy login
 .venv/bin/python deploy.py --wait
 ```
 
-If you hit any of the six TFY SDK footguns, see [`.claude/skills/truefoundry-custom-guardrail/references/deployment-playbook.md`](../.claude/skills/truefoundry-custom-guardrail/references/deployment-playbook.md). Most common ones:
+If you go this route and hit any of the six TFY SDK footguns, see [`.claude/skills/truefoundry-custom-guardrail/references/deployment-playbook.md`](../.claude/skills/truefoundry-custom-guardrail/references/deployment-playbook.md). Most common ones:
 
 - `load_dotenv(override=True)` — without it, stale shell vars win.
 - Pop `TFY_API_KEY` / vendor tokens from `os.environ` before SDK init.
 - `Service.image` needs `Build(build_spec=DockerFileBuild(...))`, not bare `DockerFileBuild`.
 - `Port(host=...)` validates against cluster-configured hosts.
 - Path needs leading + trailing `/`.
+
+### Example: host anywhere else
+
+Build the image and run it on your platform of choice. The wrapper expects:
+
+- `WRAPPER_API_KEY` env var (a bearer token the gateway will present)
+- Any vendor-specific env vars (see the integration's `.env.example`)
+- Port `8000` exposed (`uvicorn main:app --port 8000` is the entrypoint)
+
+Once the container is reachable at a public HTTPS URL, you can skip straight to Phase 4 and register the URL in the dashboard.
 
 ## Phase 4 — Register in the dashboard
 

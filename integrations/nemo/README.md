@@ -107,9 +107,11 @@ docker build -t nemo-guardrails-tfy .
 docker run --rm -p 8000:8000 --env-file .env nemo-guardrails-tfy
 ```
 
-## Deploy to TrueFoundry
+## Deploy the wrapper
 
-### A. Create secrets
+The wrapper is a standard Docker container. Host it on any runtime that can serve HTTPS on a stable URL and is reachable from your TFY Gateway — ECS / Fargate, Cloud Run, GKE / EKS / AKS, on-prem Kubernetes, or as a TrueFoundry Service via the included `deploy.py`. The example below is one option; substitute your own deploy step if you host elsewhere.
+
+### A. Create secrets (example: TrueFoundry)
 
 Dashboard → **Platform → Secrets → + Secret Group `nemo-guardrails-tfy`**:
 
@@ -118,7 +120,9 @@ Dashboard → **Platform → Secrets → + Secret Group `nemo-guardrails-tfy`**:
 | `tfy-api-key` | A TFY API key with access to `JUDGE_MODEL`. Used by the wrapper to call the gateway as the rail judge. |
 | `wrapper-api-key` | A random string. The gateway sends it as `Authorization: Bearer …` when calling the wrapper. Generate: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 
-### B. Deploy
+If you host the wrapper elsewhere, provide the same two values as environment variables (`TFY_API_KEY`, `WRAPPER_API_KEY`) on your platform.
+
+### B. Deploy (example: TrueFoundry)
 
 Fill `.env` deploy-time fields and:
 
@@ -127,6 +131,8 @@ pip install -U truefoundry
 tfy login
 python deploy.py --wait
 ```
+
+For other hosts: `docker build -t nemo-guardrails-tfy .`, run it with the env vars above, and route a public HTTPS URL to port 8000.
 
 ### C. Register as Custom Guardrails
 

@@ -128,7 +128,7 @@ When the gateway returns `guardrail_checks_failed`, the wrapper's response body 
 
 ### G21. Always read the contract source, not just the docs
 
-The SOP documents a richer contract than what's implemented. The truth is in `src/plugins/custom/guard.ts`. If the docs and the code disagree, the code wins (and you should file an issue about the docs).
+Older internal documents described a richer contract than what's actually implemented. The truth is in `src/plugins/custom/guard.ts` inside `tfy-llm-gateway`. If any document and the code disagree, the code wins (and you should file an issue about the doc).
 
 ### G22. Don't waste time on selector format variations
 

@@ -2,7 +2,9 @@
 
 TrueFoundry AI Gateway custom-guardrail integrations. One repo, many self-contained integrations.
 
-Each `integrations/<vendor>/` directory is an independently-deployable FastAPI service that conforms to the [TrueFoundry custom-guardrail HTTP contract](docs/gateway-contract.md). The TFY gateway calls these services at the `llm_input` and `llm_output` hooks; they return a verdict and the gateway honors it.
+Each `integrations/<vendor>/` directory is a standard FastAPI Docker container that conforms to the [TrueFoundry custom-guardrail HTTP contract](docs/gateway-contract.md). The TFY gateway calls these services at the `llm_input` and `llm_output` hooks; they return a verdict and the gateway honors it.
+
+**Where to host the wrapper is up to you.** The wrapper is just a Docker container — run it on ECS, Cloud Run, Kubernetes, on-prem, a dev laptop, or anywhere else Docker runs. The only TFY-side requirement is that the resulting public HTTPS URL is reachable from the TFY Gateway and registered in the dashboard. Each integration in this repo includes a `deploy.py` that shows one example of hosting (a TrueFoundry Service deploy via the TrueFoundry Python SDK).
 
 > **New integrator? Start here**: [`docs/add-a-new-integration.md`](docs/add-a-new-integration.md)
 >
@@ -15,8 +17,9 @@ Each `integrations/<vendor>/` directory is an independently-deployable FastAPI s
 | [`integrations/nemo/`](integrations/nemo/) | NVIDIA NeMo Guardrails (LLM-judged rails) | `/self-check-input`, `/self-check-output` |
 | [`integrations/guardrails-ai/`](integrations/guardrails-ai/) | Guardrails AI Hub validators (local heuristics) | `/detect-pii-{input,output}`, `/secrets-present-{input,output}`, `/toxic-language-{input,output}`, `/profanity-free-output` |
 | [`integrations/lasso-security/`](integrations/lasso-security/) | [Lasso Security](https://server.lasso.security) API v3 (SaaS classify + classifix) | `/lasso-classify`, `/lasso-classify-output`, `/lasso-classifix`, `/lasso-classifix-output` |
+| [`integrations/coreweave-weave/`](integrations/coreweave-weave/) | CoreWeave Weave scorers (Celadon toxicity classifier; local ML) | `/toxicity-input`, `/toxicity-output` |
 
-Each integration's deployed URL is configured in its own `deploy.py` (`TFY_PUBLIC_HOST` + `TFY_PUBLIC_PATH`) and varies by tenant. The `deploy.py` prints the resolved URLs after a successful run.
+Each integration ships with its own `deploy.py` (a TrueFoundry Python SDK example) that prints the resolved public URL after a successful run. Use it as-is, swap it for your own deploy step (ECS task, Cloud Run service, Kubernetes manifest, etc.), or skip it entirely — the URL is what matters, not the hosting path.
 
 Add a new integration: see [`docs/add-a-new-integration.md`](docs/add-a-new-integration.md).
 
@@ -37,7 +40,8 @@ tfy-custom-guardrails/
     ├── _template/                  Skeleton — `cp -r _template/ <new-vendor>/`
     ├── nemo/                       NVIDIA NeMo Guardrails wrapper (example)
     ├── guardrails-ai/              Guardrails AI Hub validators wrapper (example)
-    └── lasso-security/             Lasso Security classify/classifix wrapper (SaaS)
+    ├── lasso-security/             Lasso Security classify/classifix wrapper (SaaS)
+    └── coreweave-weave/            CoreWeave Weave scorers wrapper (Celadon toxicity)
 ```
 
 ## Design principle
@@ -71,7 +75,8 @@ To add a new vendor:
 ```bash
 cp -r integrations/_template integrations/<new-vendor>
 # Edit integrations/<new-vendor>/{main.py, guardrail/, requirements.txt, deploy.py, README.md, ...}
-# Run tests, deploy, register in TFY dashboard.
+# Run tests, host the wrapper (anywhere — see the per-integration READMEs for examples),
+# register in the TFY Gateway dashboard.
 # Full step-by-step: docs/add-a-new-integration.md
 ```
 
@@ -81,4 +86,3 @@ cp -r integrations/_template integrations/<new-vendor>
 - **The HTTP contract**: [`docs/gateway-contract.md`](docs/gateway-contract.md). Single source of truth.
 - **Vendor-agnostic demo prompts** (allow controls + violations across PII / secrets / toxicity / jailbreak / etc.): [`docs/guardrail-test-phrases.md`](docs/guardrail-test-phrases.md).
 - **Reusable skill** that future Claude Code sessions or contributors can use to scaffold a new integration: [`.claude/skills/truefoundry-custom-guardrail/`](.claude/skills/truefoundry-custom-guardrail/).
-- **Team SOP** (defines the §1–§5 integration paths — Custom Endpoint, Custom Guardrail, OTEL Exporter, Native Provider, Native Guardrail): held by the gateway team, not in this repo. Ask the team if you need a copy.
