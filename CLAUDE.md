@@ -1,6 +1,6 @@
 # Working dir context — tfy-custom-guardrails
 
-Monorepo for TrueFoundry AI Gateway custom-guardrail integrations. Each `integrations/<vendor>/` is an independently-deployable FastAPI service that conforms to the gateway's [`docs/gateway-contract.md`](docs/gateway-contract.md). Three integrations ship in the repo today: `integrations/nemo/` (LLM-judged), `integrations/guardrails-ai/` (local heuristic validators), and `integrations/lasso-security/` (Lasso Security SaaS classify + classifix).
+Monorepo for TrueFoundry AI Gateway custom-guardrail integrations. Each `integrations/<vendor>/` is an independently-deployable FastAPI service that conforms to the gateway's [`docs/gateway-contract.md`](docs/gateway-contract.md). Integrations in the repo include `integrations/nemo/` (LLM-judged), `integrations/guardrails-ai/` (local heuristic validators), `integrations/lasso-security/` (Lasso Security SaaS classify + classifix), and `integrations/knostic/` (Knostic Prompt Gateway SaaS inspect + sanitize).
 
 This file is the **starting point** for any Claude Code session opened in this directory. Inline facts below cover the common questions; cross-refs link to deep material.
 
@@ -20,7 +20,8 @@ tfy-custom-guardrails/
     ├── _template/                               Skeleton for new integrations
     ├── nemo/                                    NVIDIA NeMo Guardrails (example: LLM-judged)
     ├── guardrails-ai/                           Guardrails AI Hub validators (example: heuristic)
-    └── lasso-security/                          Lasso Security API v3 (example: SaaS validate + mutate)
+    ├── lasso-security/                          Lasso Security API v3 (example: SaaS validate + mutate)
+    └── knostic/                                 Knostic Prompt Gateway (example: SaaS inspect + sanitize)
 ```
 
 ## The custom-guardrail HTTP contract (MEMORIZE)
@@ -137,6 +138,23 @@ Vendor gotchas:
 - **Mutate path**: classifix applies Lasso-returned masked messages or span masks from findings; BLOCK findings without mask metadata still deny even on mutate rails.
 - **Debug endpoint** is `/debug/runtime-config` (not `/debug/loaded-config`).
 
+### Knostic (`integrations/knostic/`)
+
+Four per-rail endpoints wrapping Knostic Prompt Gateway `inspect` (validate) and `sanitize` (mutate). Need-to-know enforcement, prompt-injection defense, and DLP for enterprise LLM gateways. SaaS round-trip per request; default timeout 15s. **Tenant API base URL and paths are provisioned by Knostic** — defaults in code are placeholders.
+
+- **Endpoints**: `/health`, `/debug/loaded-config`, plus 4 rails:
+  `POST /knostic-prompt-inspect-input`, `POST /knostic-prompt-inspect-output`, `POST /knostic-prompt-sanitize-input`, `POST /knostic-prompt-sanitize-output`
+- **Operations**: inspect rails → `Operation: Validate`; sanitize rails → `Operation: Mutate`
+- **Deploy**: `cd integrations/knostic && .venv/bin/python deploy.py --wait`
+- **Repo docs**: `integrations/knostic/{README.md, docs/DESIGN.md, docs/public-docs-knostic.md}`
+
+Vendor gotchas:
+- **No public OpenAPI** — confirm `KNOSTIC_API_BASE`, `KNOSTIC_INSPECT_PATH`, `KNOSTIC_SANITIZE_PATH` with Knostic customer success before production.
+- **Knostic API key** via deploy secret `KNOSTIC_API_KEY` or `config.credentials.apiKey`.
+- **Policy id** optional via `KNOSTIC_POLICY_ID` or `config.policyId` for need-to-know boundaries.
+- **Response parsing is flexible** — wrapper accepts `action`, `allowed`, `violations`, `findings`, and masked `messages` shapes; tighten when tenant schema is fixed.
+- **Kirin ≠ Prompt Gateway** — Kirin secures IDE coding assistants; this wrapper targets inline LLM gateway guardrails.
+
 ## Reusable skill
 
 `.claude/skills/truefoundry-custom-guardrail/` is the **full playbook** for adding a new custom-guardrail integration end-to-end:
@@ -153,6 +171,6 @@ Packaged zip at `.claude/skills/truefoundry-custom-guardrail.skill` for claude.a
 
 Don't accidentally redo these:
 
-- **Mutation mode** (PII redaction-in-place) is implemented in `integrations/lasso-security/` via Lasso `classifix` rails (`Operation: Mutate`). NeMo and Guardrails AI remain validate-only.
+- **Mutation mode** (PII redaction-in-place) is implemented in `integrations/lasso-security/` (Lasso `classifix`) and `integrations/knostic/` (Knostic `sanitize`). NeMo and Guardrails AI remain validate-only.
 - **Per-tenant config via `req.config.config_id`** is a v2 candidate — not built.
 - **Tenant gateway version dependency**: the 2xx+verdict contract requires `tfy-llm-gateway` commit `a1c551be` or later. Smoke-test on a new tenant before relying on the new shape; older gateways need `Fail on error: true` and the wrapper must use the legacy 4xx-block path.
