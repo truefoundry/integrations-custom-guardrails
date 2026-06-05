@@ -296,6 +296,50 @@ def test_validate_output_sends_response_field(
 
 
 @respx.mock
+def test_validate_output_list_content_calls_arthur(
+    client: TestClient, auth: dict[str, str], mock_env: None
+) -> None:
+    route = respx.post(_VALIDATE_URL).respond(
+        json={
+            "results": [
+                {
+                    "id": "1",
+                    "name": "toxicity-check",
+                    "rule_type": "ToxicityRule",
+                    "scope": "default",
+                    "result": "Pass",
+                    "latency_ms": 108,
+                }
+            ]
+        }
+    )
+    body = {
+        "requestBody": {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+        "responseBody": {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "Hello! How can I help?"},
+                        ],
+                    }
+                }
+            ]
+        },
+        "context": CTX,
+        "config": {},
+    }
+    response = client.post("/validate-output", headers=auth, json=body)
+    assert response.status_code == 200
+    assert response.json()["verdict"] is True
+    assert route.called
+    payload = route.calls.last.request.read()
+    assert b'"response"' in payload
+    assert b"Hello! How can I help?" in payload
+
+
+@respx.mock
 def test_unavailable_fail_open(client: TestClient, auth: dict[str, str], mock_env: None) -> None:
     respx.post(_VALIDATE_URL).respond(
         json={
