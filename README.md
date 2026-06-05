@@ -18,6 +18,8 @@ Each `integrations/<vendor>/` directory is a standard FastAPI Docker container t
 | [`integrations/guardrails-ai/`](integrations/guardrails-ai/) | Guardrails AI Hub validators (local heuristics) | `/detect-pii-{input,output}`, `/secrets-present-{input,output}`, `/toxic-language-{input,output}`, `/profanity-free-output` |
 | [`integrations/lasso-security/`](integrations/lasso-security/) | [Lasso Security](https://server.lasso.security) API v3 (SaaS classify + classifix) | `/lasso-classify`, `/lasso-classify-output`, `/lasso-classifix`, `/lasso-classifix-output` |
 | [`integrations/coreweave-weave/`](integrations/coreweave-weave/) | CoreWeave Weave scorers (Celadon toxicity classifier; local ML) | `/toxicity-input`, `/toxicity-output` |
+| [`integrations/arthur-ai/`](integrations/arthur-ai/) | [Arthur GenAI Engine](https://platform.arthur.ai) stateless validation API (SaaS) | `/validate-input`, `/validate-output` |
+| [`integrations/verra/`](integrations/verra/) | [Verra](https://helloverra.com) managed AI governance (SaaS validate + mutate) | `/scan-input`, `/redact-input`, `/scan-output`, `/redact-output` |
 
 Each integration ships with its own `deploy.py` (a TrueFoundry Python SDK example) that prints the resolved public URL after a successful run. Use it as-is, swap it for your own deploy step (ECS task, Cloud Run service, Kubernetes manifest, etc.), or skip it entirely — the URL is what matters, not the hosting path.
 
@@ -41,7 +43,9 @@ tfy-custom-guardrails/
     ├── nemo/                       NVIDIA NeMo Guardrails wrapper (example)
     ├── guardrails-ai/              Guardrails AI Hub validators wrapper (example)
     ├── lasso-security/             Lasso Security classify/classifix wrapper (SaaS)
-    └── coreweave-weave/            CoreWeave Weave scorers wrapper (Celadon toxicity)
+    ├── coreweave-weave/            CoreWeave Weave scorers wrapper (Celadon toxicity)
+    ├── arthur-ai/                  Arthur GenAI Engine validate API wrapper (SaaS)
+    └── verra/                      Verra managed AI governance wrapper (SaaS)
 ```
 
 ## Design principle
