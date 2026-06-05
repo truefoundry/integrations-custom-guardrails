@@ -151,6 +151,38 @@ def test_no_assistant_message_passes_through(client: TestClient, auth: dict[str,
 
 
 @respx.mock
+def test_validate_input_uses_defaults_when_config_empty(
+    client: TestClient, auth: dict[str, str], mock_env: None
+) -> None:
+    route = respx.post(_VALIDATE_URL).respond(
+        json={
+            "results": [
+                {
+                    "id": "1",
+                    "name": "prompt-injection-check",
+                    "rule_type": "PromptInjectionRule",
+                    "scope": "default",
+                    "result": "Pass",
+                    "latency_ms": 100,
+                }
+            ]
+        }
+    )
+    body = {
+        "requestBody": {"model": "gpt-4o", "messages": [{"role": "user", "content": "hello"}]},
+        "context": CTX,
+        "config": {},
+    }
+    response = client.post("/validate-input", headers=auth, json=body)
+    assert response.status_code == 200
+    assert response.json()["verdict"] is True
+    assert route.called
+    payload = route.calls.last.request.read()
+    assert b'"prompt-injection-check"' in payload
+    assert b'"PromptInjectionRule"' in payload
+
+
+@respx.mock
 def test_validate_input_allow(client: TestClient, auth: dict[str, str], mock_env: None) -> None:
     respx.post(_VALIDATE_URL).respond(
         json={

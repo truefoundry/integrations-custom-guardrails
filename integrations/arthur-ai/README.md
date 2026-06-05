@@ -73,7 +73,14 @@ curl -X POST http://localhost:8000/validate-input \
 
 Register **two** Custom Guardrail Configs (input + output). Set **Operation** to **Validate**.
 
-The `config` JSON in the dashboard drives Arthur's `checks` array. Example for input:
+**Config can be `{}`.** When `config.checks` is missing or empty, the wrapper uses built-in defaults:
+
+- **Input:** `PromptInjectionRule` + `ToxicityRule` on prompts
+- **Output:** `ToxicityRule` on responses
+
+See `guardrail/_defaults.py` or `GET /debug/loaded-config` for the exact JSON. Override by setting `config.checks` in the dashboard.
+
+Optional example if you want custom checks in the dashboard. Example for input:
 
 ```json
 {

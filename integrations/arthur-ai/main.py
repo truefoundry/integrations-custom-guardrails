@@ -27,6 +27,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from guardrail._arthur_client import DEFAULT_API_BASE, DEFAULT_TIMEOUT
+from guardrail._defaults import DEFAULT_INPUT_CHECKS, DEFAULT_OUTPUT_CHECKS
 from guardrail.validate import validate_input, validate_output
 
 load_dotenv()
@@ -91,6 +92,10 @@ async def debug_loaded_config() -> dict:
         "arthur_api_key_configured": bool(os.environ.get("ARTHUR_API_KEY", "").strip()),
         "wrapper_auth_enabled": bool(WRAPPER_API_KEY),
         "wrapper_version": os.environ.get("BUILD_REF", "unknown"),
+        "default_checks": {
+            "input": DEFAULT_INPUT_CHECKS,
+            "output": DEFAULT_OUTPUT_CHECKS,
+        },
     }
 
 

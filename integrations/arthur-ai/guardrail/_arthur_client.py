@@ -9,6 +9,8 @@ from typing import Any, Optional
 import httpx
 from fastapi import HTTPException
 
+from guardrail._defaults import DEFAULT_INPUT_CHECKS, DEFAULT_OUTPUT_CHECKS
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_BASE = "https://engine.platform.arthur.ai"
@@ -139,17 +141,24 @@ def _arthur_http_error(response: httpx.Response) -> ArthurApiError:
 
 
 def resolve_checks(config: Optional[dict[str, Any]], *, for_prompt: bool) -> list[dict[str, Any]]:
-    """Return checks from TF config filtered to the current hook direction."""
+    """Return checks from TF config, falling back to built-in defaults when absent."""
     raw_checks = _get_config_value(config, "checks", default=[])
-    if not isinstance(raw_checks, list) or not raw_checks:
-        raise HTTPException(
-            status_code=500,
-            detail="Arthur checks not configured. Set config.checks in the Custom Guardrail Config.",
+    using_defaults = not isinstance(raw_checks, list) or not raw_checks
+    if using_defaults:
+        raw_checks = DEFAULT_INPUT_CHECKS if for_prompt else DEFAULT_OUTPUT_CHECKS
+        logger.info(
+            "config.checks missing or empty; using built-in default %s checks",
+            "input" if for_prompt else "output",
         )
 
     field = "apply_to_prompt" if for_prompt else "apply_to_response"
     filtered = [check for check in raw_checks if isinstance(check, dict) and check.get(field)]
     if not filtered:
+        if using_defaults:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Built-in default Arthur checks misconfigured for {field}=true.",
+            )
         raise HTTPException(
             status_code=500,
             detail=f"No Arthur checks with {field}=true in config.checks.",
