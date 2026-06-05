@@ -77,7 +77,9 @@ def resolve_api_base(config: Optional[dict[str, Any]]) -> str:
 
 
 def resolve_timeout(config: Optional[dict[str, Any]]) -> float:
-    timeout = _get_config_value(config, "timeout", default=DEFAULT_TIMEOUT)
+    timeout = _get_config_value(config, "timeout") or os.getenv(
+        "ARTHUR_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT)
+    )
     return float(timeout)
 
 

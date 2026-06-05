@@ -95,6 +95,28 @@ def _output_body(content: str, config: dict | None = None, user_msg: str = "hi")
     }
 
 
+def test_resolve_timeout_prefers_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from guardrail._arthur_client import resolve_timeout
+
+    monkeypatch.setenv("ARTHUR_TIMEOUT_SECONDS", "99")
+    assert resolve_timeout({"timeout": 10}) == 10.0
+
+
+def test_resolve_timeout_uses_env_when_config_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from guardrail._arthur_client import resolve_timeout
+
+    monkeypatch.setenv("ARTHUR_TIMEOUT_SECONDS", "45")
+    assert resolve_timeout({}) == 45.0
+    assert resolve_timeout(None) == 45.0
+
+
+def test_resolve_timeout_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from guardrail._arthur_client import resolve_timeout
+
+    monkeypatch.delenv("ARTHUR_TIMEOUT_SECONDS", raising=False)
+    assert resolve_timeout({}) == 30.0
+
+
 def test_health(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
