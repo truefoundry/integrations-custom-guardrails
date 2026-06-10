@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_BASE = "https://server.lasso.security/gateway/v3"
 DEFAULT_TIMEOUT = 10.0
 
+# Lasso finding actions whose mask spans should be applied on mutate rails.
+# Other actions (e.g. ADMIN_ALERT / USER_ALERT) carry span metadata but the
+# policy intent is to alert, not redact — so we do not mask them.
+_MASKING_ACTIONS = frozenset({"AUTO_MASKING"})
+
 
 INVALID_API_KEY_MESSAGE = (
     "Invalid Lasso API key. Verify config.credentials.apiKey or LASSO_API_KEY."
@@ -234,8 +239,11 @@ def _finding_has_mask_span(finding: dict[str, Any]) -> bool:
     )
 
 
-def _blocking_without_mask_spans(findings: dict[str, Any]) -> tuple[bool, str]:
-    """BLOCK findings that classifix cannot redact via start/end/mask metadata."""
+def _blocking_findings(findings: dict[str, Any]) -> tuple[bool, str]:
+    """BLOCK findings deny on mutate rails. Mask spans are only applied for
+    masking actions (_MASKING_ACTIONS), so a BLOCK finding is never redacted in
+    place — even when it carries start/end/mask metadata — and must deny rather
+    than pass through unchanged."""
     details: list[str] = []
     for deputy, deputy_findings in findings.items():
         if not isinstance(deputy_findings, list):
@@ -244,8 +252,6 @@ def _blocking_without_mask_spans(findings: dict[str, Any]) -> tuple[bool, str]:
             if not isinstance(finding, dict):
                 continue
             if finding.get("action") != "BLOCK":
-                continue
-            if _finding_has_mask_span(finding):
                 continue
             name = finding.get("name", "violation")
             severity = finding.get("severity", "")
@@ -263,6 +269,13 @@ def _extract_mask_spans(findings: dict[str, Any]) -> list[tuple[int, int, int, s
             continue
         for finding in deputy_findings:
             if not isinstance(finding, dict) or not _finding_has_mask_span(finding):
+                continue
+            # Only redact findings the policy actually marks for masking. Lasso
+            # returns start/end/mask span metadata on PII findings regardless of
+            # action (e.g. it is present on ADMIN_ALERT / USER_ALERT findings that
+            # the console policy only wants to *alert* on). Applying every span
+            # would mask content the operator chose not to mask.
+            if finding.get("action") not in _MASKING_ACTIONS:
                 continue
             spans.append(
                 (
@@ -480,8 +493,8 @@ def _mutate_response(
     if not transformed:
         result, transformed = _apply_finding_masks(result, findings, is_output=is_output)
 
-    block_without_mask, detail = _blocking_without_mask_spans(findings)
-    if block_without_mask:
+    blocked, _ = _blocking_findings(findings)
+    if blocked:
         return MutateGuardrailResponse(verdict=False, transformed=False, result=body)
 
     if transformed:

@@ -72,10 +72,11 @@ def _mock_lasso(monkeypatch: pytest.MonkeyPatch, payload: dict) -> None:
     monkeypatch.setattr(lasso.requests, "post", lambda *a, **k: _FakeResponse(payload))
 
 
-def _classifix_with_span(role: str, content: str) -> dict:
+def _classifix_with_span(role: str, content: str, action: str = "AUTO_MASKING") -> dict:
     """A realistic classifix response: messages come back UNMASKED, and the
-    redaction lives in a finding span (action ADMIN_ALERT does not rewrite
-    messages). The wrapper is responsible for applying the span."""
+    redaction lives in a finding span. The wrapper applies the span only when
+    the finding's action marks it for masking (AUTO_MASKING); alert-only
+    actions (e.g. ADMIN_ALERT) carry the span but must not be masked."""
     start = content.index(EMAIL)
     return {
         "deputies": {"pattern-detection": True},
@@ -85,7 +86,7 @@ def _classifix_with_span(role: str, content: str) -> dict:
                     "message_index": 0,
                     "name": "Email Address",
                     "category": "PERSONAL_IDENTIFIABLE_INFORMATION",
-                    "action": "ADMIN_ALERT",
+                    "action": action,
                     "severity": "HIGH",
                     "start": start,
                     "end": start + len(EMAIL),
@@ -144,6 +145,42 @@ def test_output_classifix_clean_no_transform(
     assert data["verdict"] is True
     assert data["transformed"] is False
     assert data["result"]["choices"][0]["message"]["content"] == clean
+
+
+def test_output_classifix_alert_only_not_masked(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Policy fidelity: an alert-only finding (ADMIN_ALERT) carries a mask span
+    but the operator chose to alert, not redact — so the content must pass
+    through unmasked and unchanged."""
+    content = f"Sure, contact me at {EMAIL}"
+    _mock_lasso(monkeypatch, _classifix_with_span("assistant", content, action="ADMIN_ALERT"))
+    body = {
+        "requestBody": {"messages": [{"role": "user", "content": "hi"}]},
+        "responseBody": {"choices": [{"message": {"role": "assistant", "content": content}}]},
+        "context": CTX,
+    }
+    data = client.post("/lasso-classifix-output", json=body, headers=auth).json()
+    assert data["verdict"] is True
+    assert data["transformed"] is False
+    assert data["result"]["choices"][0]["message"]["content"] == content
+
+
+def test_classifix_block_finding_denies(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A BLOCK finding must deny on a mutate rail even when it carries a mask
+    span. Spans are only applied for AUTO_MASKING, so a BLOCK finding is never
+    redacted in place — it must not pass through unmasked with verdict=true."""
+    content = f"My email is {EMAIL}"
+    _mock_lasso(monkeypatch, _classifix_with_span("user", content, action="BLOCK"))
+    body = {
+        "requestBody": {"messages": [{"role": "user", "content": content}]},
+        "context": CTX,
+    }
+    data = client.post("/lasso-classifix", json=body, headers=auth).json()
+    assert data["verdict"] is False
+    assert data["transformed"] is False
 
 
 def test_input_classifix_masks_pii(
