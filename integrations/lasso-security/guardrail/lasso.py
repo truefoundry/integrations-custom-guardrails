@@ -343,18 +343,15 @@ def _call_lasso(
     api_key: str,
     api_base: str,
     timeout: float,
-    conversation_id: Optional[str],
-    user_id: Optional[str],
 ) -> dict[str, Any]:
     url = f"{api_base}/{endpoint}"
+    # userId / sessionId travel in the request body (_build_lasso_payload); the
+    # Lasso API does not read lasso-user-id / lasso-conversation-id request
+    # headers, so we don't send them.
     headers = {
         "lasso-api-key": api_key,
         "Content-Type": "application/json",
     }
-    if conversation_id:
-        headers["lasso-conversation-id"] = conversation_id
-    if user_id:
-        headers["lasso-user-id"] = user_id
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=timeout)
@@ -388,7 +385,6 @@ def _invoke_lasso(
     timeout = _resolve_timeout(config)
     session_id = _resolve_session_id(request)
     user_id = _resolve_user_id(request)
-    conversation_id = _get_config_value(config, "conversationId") or session_id
 
     tools = []
     if isinstance(request, InputGuardrailRequest):
@@ -401,8 +397,6 @@ def _invoke_lasso(
         api_key=api_key,
         api_base=api_base,
         timeout=timeout,
-        conversation_id=conversation_id,
-        user_id=user_id,
     )
 
 
