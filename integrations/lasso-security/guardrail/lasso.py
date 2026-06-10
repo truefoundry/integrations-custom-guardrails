@@ -431,10 +431,19 @@ def _apply_masked_messages(
             return updated, False
         choice = choices[0]
         if isinstance(choice, dict) and isinstance(choice.get("message"), dict):
-            choice["message"]["content"] = masked_messages[0].get("content", choice["message"].get("content"))
+            original_content = choice["message"].get("content")
+            new_content = masked_messages[0].get("content", original_content)
             if len(masked_messages) > 1:
                 logger.warning("Lasso returned multiple masked completion messages; applied first only")
-            return updated, True
+            # Only report a transform when the content actually changed; otherwise
+            # return False so _mutate_response falls through to _apply_finding_masks
+            # (mirrors the input branch). Without this, the output rail returned
+            # transformed=True with unchanged content and never applied span masks,
+            # silently passing PII through.
+            if str(new_content) != str(original_content):
+                choice["message"]["content"] = new_content
+                return updated, True
+            return updated, False
         return updated, False
 
     original = updated.get("messages", [])
