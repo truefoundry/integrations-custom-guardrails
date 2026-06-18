@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_BASE = "https://server.lasso.security/gateway/v3"
 DEFAULT_TIMEOUT = 10.0
 
+# Lasso finding actions whose mask spans should be applied on mutate rails.
+# Other actions (e.g. ADMIN_ALERT / USER_ALERT) carry span metadata but the
+# policy intent is to alert, not redact — so we do not mask them.
+_MASKING_ACTIONS = frozenset({"AUTO_MASKING"})
+
 
 INVALID_API_KEY_MESSAGE = (
     "Invalid Lasso API key. Verify config.credentials.apiKey or LASSO_API_KEY."
@@ -234,8 +239,11 @@ def _finding_has_mask_span(finding: dict[str, Any]) -> bool:
     )
 
 
-def _blocking_without_mask_spans(findings: dict[str, Any]) -> tuple[bool, str]:
-    """BLOCK findings that classifix cannot redact via start/end/mask metadata."""
+def _blocking_findings(findings: dict[str, Any]) -> tuple[bool, str]:
+    """BLOCK findings deny on mutate rails. Mask spans are only applied for
+    masking actions (_MASKING_ACTIONS), so a BLOCK finding is never redacted in
+    place — even when it carries start/end/mask metadata — and must deny rather
+    than pass through unchanged."""
     details: list[str] = []
     for deputy, deputy_findings in findings.items():
         if not isinstance(deputy_findings, list):
@@ -244,8 +252,6 @@ def _blocking_without_mask_spans(findings: dict[str, Any]) -> tuple[bool, str]:
             if not isinstance(finding, dict):
                 continue
             if finding.get("action") != "BLOCK":
-                continue
-            if _finding_has_mask_span(finding):
                 continue
             name = finding.get("name", "violation")
             severity = finding.get("severity", "")
@@ -263,6 +269,13 @@ def _extract_mask_spans(findings: dict[str, Any]) -> list[tuple[int, int, int, s
             continue
         for finding in deputy_findings:
             if not isinstance(finding, dict) or not _finding_has_mask_span(finding):
+                continue
+            # Only redact findings the policy actually marks for masking. Lasso
+            # returns start/end/mask span metadata on PII findings regardless of
+            # action (e.g. it is present on ADMIN_ALERT / USER_ALERT findings that
+            # the console policy only wants to *alert* on). Applying every span
+            # would mask content the operator chose not to mask.
+            if finding.get("action") not in _MASKING_ACTIONS:
                 continue
             spans.append(
                 (
@@ -343,18 +356,15 @@ def _call_lasso(
     api_key: str,
     api_base: str,
     timeout: float,
-    conversation_id: Optional[str],
-    user_id: Optional[str],
 ) -> dict[str, Any]:
     url = f"{api_base}/{endpoint}"
+    # userId / sessionId travel in the request body (_build_lasso_payload); the
+    # Lasso API does not read lasso-user-id / lasso-conversation-id request
+    # headers, so we don't send them.
     headers = {
         "lasso-api-key": api_key,
         "Content-Type": "application/json",
     }
-    if conversation_id:
-        headers["lasso-conversation-id"] = conversation_id
-    if user_id:
-        headers["lasso-user-id"] = user_id
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=timeout)
@@ -388,7 +398,6 @@ def _invoke_lasso(
     timeout = _resolve_timeout(config)
     session_id = _resolve_session_id(request)
     user_id = _resolve_user_id(request)
-    conversation_id = _get_config_value(config, "conversationId") or session_id
 
     tools = []
     if isinstance(request, InputGuardrailRequest):
@@ -401,8 +410,6 @@ def _invoke_lasso(
         api_key=api_key,
         api_base=api_base,
         timeout=timeout,
-        conversation_id=conversation_id,
-        user_id=user_id,
     )
 
 
@@ -431,10 +438,19 @@ def _apply_masked_messages(
             return updated, False
         choice = choices[0]
         if isinstance(choice, dict) and isinstance(choice.get("message"), dict):
-            choice["message"]["content"] = masked_messages[0].get("content", choice["message"].get("content"))
+            original_content = choice["message"].get("content")
+            new_content = masked_messages[0].get("content", original_content)
             if len(masked_messages) > 1:
                 logger.warning("Lasso returned multiple masked completion messages; applied first only")
-            return updated, True
+            # Only report a transform when the content actually changed; otherwise
+            # return False so _mutate_response falls through to _apply_finding_masks
+            # (mirrors the input branch). Without this, the output rail returned
+            # transformed=True with unchanged content and never applied span masks,
+            # silently passing PII through.
+            if str(new_content) != str(original_content):
+                choice["message"]["content"] = new_content
+                return updated, True
+            return updated, False
         return updated, False
 
     original = updated.get("messages", [])
@@ -477,8 +493,8 @@ def _mutate_response(
     if not transformed:
         result, transformed = _apply_finding_masks(result, findings, is_output=is_output)
 
-    block_without_mask, detail = _blocking_without_mask_spans(findings)
-    if block_without_mask:
+    blocked, _ = _blocking_findings(findings)
+    if blocked:
         return MutateGuardrailResponse(verdict=False, transformed=False, result=body)
 
     if transformed:
