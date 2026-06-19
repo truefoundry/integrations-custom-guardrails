@@ -187,15 +187,23 @@ def _invalidate_token_cache() -> None:
     _token_cache["cache_key"] = None
 
 
+TOKEN_FORM_BODY = "grant_type=client_credentials"
+
+
 def _fetch_access_token(client_id: str, client_secret: str, auth_base: str, timeout: float) -> str:
+    # Match HL docs / curl: POST with HTTP Basic auth and form-urlencoded grant_type body.
+    # https://auth.hiddenlayer.ai/oauth2/token  -d "grant_type=client_credentials"
     url = f"{auth_base}{TOKEN_PATH}"
     try:
         with httpx.Client(timeout=timeout) as client:
             response = client.post(
                 url,
-                params={"grant_type": "client_credentials"},
                 auth=(client_id, client_secret),
-                data={"grant_type": "client_credentials"},
+                content=TOKEN_FORM_BODY,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
             )
     except httpx.RequestError as exc:
         logger.error("HiddenLayer token request failed: %s", exc)

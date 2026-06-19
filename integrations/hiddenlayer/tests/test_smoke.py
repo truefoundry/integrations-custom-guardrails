@@ -444,7 +444,8 @@ def test_token_exchange_uses_client_credentials_basic_auth(
     assert response.status_code == 200
     assert token_route.called
     token_request = token_route.calls.last.request
-    assert "grant_type=client_credentials" in str(token_request.url)
+    assert token_request.content.decode() == "grant_type=client_credentials"
+    assert token_request.headers["content-type"].startswith("application/x-www-form-urlencoded")
     assert token_request.headers["authorization"].lower().startswith("basic ")
 
 
