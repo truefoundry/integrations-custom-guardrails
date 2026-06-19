@@ -161,6 +161,27 @@ def resolve_project_id(config: Optional[dict[str, Any]]) -> Optional[str]:
     return project_id or None
 
 
+def ensure_project_id(config: Optional[dict[str, Any]]) -> str:
+    """HiddenLayer policy (detections + redaction) requires HL-Project-Id."""
+    if os.getenv("HIDDENLAYER_SKIP_PROJECT_ID_CHECK", "").strip().lower() in ("1", "true", "yes"):
+        project_id = resolve_project_id(config)
+        if project_id:
+            return project_id
+        return "default"
+
+    project_id = resolve_project_id(config)
+    if not project_id:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "HiddenLayer project ID not configured. Set HIDDENLAYER_PROJECT_ID in the service "
+                "environment (TrueFoundry / Render). This selects the AISec policy that controls "
+                "detection and redaction."
+            ),
+        )
+    return project_id
+
+
 def resolve_provider(config: Optional[dict[str, Any]]) -> str:
     provider = _get_config_value(config, "provider") or os.getenv("HIDDENLAYER_PROVIDER", DEFAULT_PROVIDER)
     return str(provider).strip() or DEFAULT_PROVIDER
@@ -179,7 +200,11 @@ def resolve_fail_open_on_unavailable(config: Optional[dict[str, Any]]) -> bool:
 
 
 def resolve_allow_alert_on_validate(config: Optional[dict[str, Any]]) -> bool:
-    """When true, HL Alert detections pass on validate rails (observe-only). Default: block."""
+    env_val = os.getenv("HIDDENLAYER_ALLOW_ALERT_ON_VALIDATE", "").strip().lower()
+    if env_val in ("1", "true", "yes"):
+        return True
+    if env_val in ("0", "false", "no"):
+        return False
     return bool(_get_config_value(config, "allow_alert_on_validate", default=False))
 
 
@@ -377,15 +402,14 @@ def call_hiddenlayer_interactions(
 ) -> dict[str, Any]:
     api_base = resolve_api_base(config)
     timeout = resolve_timeout(config)
-    project_id = resolve_project_id(config)
+    project_id = ensure_project_id(config)
     url = f"{api_base}{INTERACTIONS_PATH}"
 
     headers = {
         "Authorization": f"Bearer {get_access_token(config)}",
         "Content-Type": "application/json",
+        "HL-Project-Id": project_id,
     }
-    if project_id:
-        headers["HL-Project-Id"] = project_id
     if session_id:
         headers["HL-Runtime-Session-Id"] = session_id
 
@@ -474,8 +498,20 @@ def map_redact_response(
         return True, False, original_body, None
 
     action = _normalize_action(evaluation.get("action") or "Allow")
+    has_detections = bool(evaluation.get("has_detections"))
 
     if action in ALLOW_ACTIONS:
+        if bodies_differ(original_body, modified_body):
+            logger.info(
+                "HiddenLayer mutate rail applying modified_data despite action=%s", action
+            )
+            return True, True, modified_body, None
+        if has_detections:
+            logger.warning(
+                "HiddenLayer mutate rail: action=%s with detections but unchanged payload. "
+                "Set the analyzer enforcement to Redact (not Alert-only) in the AISec console.",
+                action,
+            )
         return True, False, original_body, None
     if action in REDACT_ACTIONS:
         if bodies_differ(original_body, modified_body):

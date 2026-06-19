@@ -86,6 +86,12 @@ def build_service() -> Service:
     }
     if HIDDENLAYER_PROJECT_ID:
         env["HIDDENLAYER_PROJECT_ID"] = HIDDENLAYER_PROJECT_ID
+    else:
+        print(
+            "WARNING: HIDDENLAYER_PROJECT_ID is not set. Detections and redaction will not work "
+            "until you add it to .env before deploy.",
+            file=sys.stderr,
+        )
 
     return Service(
         name=SERVICE_NAME,

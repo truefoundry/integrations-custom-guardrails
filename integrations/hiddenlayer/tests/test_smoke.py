@@ -598,6 +598,21 @@ def test_unavailable_fail_closed(client: TestClient, auth: dict[str, str], mock_
     assert response.status_code >= 500
 
 
+@respx.mock
+def test_missing_project_id_returns_500(
+    client: TestClient, auth: dict[str, str], mock_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("HIDDENLAYER_PROJECT_ID", raising=False)
+    _register_token_route()
+    body = {
+        "requestBody": {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+        "context": CTX,
+    }
+    response = client.post("/validate-input", headers=auth, json=body)
+    assert response.status_code == 500
+    assert "HIDDENLAYER_PROJECT_ID" in response.json()["detail"]
+
+
 @requires_live
 def test_validate_input_benign_allows(client: TestClient, auth: dict[str, str]) -> None:
     response = client.post(
