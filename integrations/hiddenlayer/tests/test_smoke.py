@@ -71,7 +71,7 @@ def _allow_response(action: str = "Allow") -> dict:
     return {
         "metadata": {"event_id": "evt-1", "processing_time_ms": 12.0},
         "analysis": [],
-        "evaluation": {"action": action, "has_detections": False, "threat_level": "None"},
+        "evaluation": {"action": action, "has_detections": action != "Allow", "threat_level": "High" if action != "Allow" else "None"},
         "analyzed_data": {"input": {"messages": []}, "output": {"messages": []}},
         "modified_data": {"input": {"messages": []}, "output": {"messages": []}},
     }
@@ -325,10 +325,30 @@ def test_validate_input_allow(client: TestClient, auth: dict[str, str], mock_env
 
 
 @respx.mock
-def test_validate_input_alert_allows(client: TestClient, auth: dict[str, str], mock_env: None) -> None:
+def test_validate_input_alert_denies_by_default(
+    client: TestClient, auth: dict[str, str], mock_env: None
+) -> None:
     _register_token_route()
     respx.post(_INTERACTIONS_URL).respond(json=_allow_response("Alert"))
     response = client.post("/validate-input", headers=auth, json=_input_body("hello"))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["verdict"] is False
+    assert "alert" in body["message"].lower()
+
+
+@respx.mock
+def test_validate_input_alert_can_pass_when_configured(
+    client: TestClient, auth: dict[str, str], mock_env: None
+) -> None:
+    _register_token_route()
+    respx.post(_INTERACTIONS_URL).respond(json=_allow_response("Alert"))
+    config = {**CONFIG, "allow_alert_on_validate": True}
+    response = client.post(
+        "/validate-input",
+        headers=auth,
+        json=_input_body("hello", config=config),
+    )
     assert response.status_code == 200
     assert response.json()["verdict"] is True
 
@@ -598,5 +618,5 @@ def test_validate_input_jailbreak_blocks(client: TestClient, auth: dict[str, str
     )
     assert response.status_code == 200
     body = response.json()
-    # Live project policy may Alert instead of Block; both are allowed on validate rails.
-    assert "verdict" in body
+    assert body["verdict"] is False
+    assert "message" in body

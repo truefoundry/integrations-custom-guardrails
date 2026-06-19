@@ -57,7 +57,7 @@ def validate_input(request: InputGuardrailRequest) -> ValidateGuardrailResponse:
             request.config,
             session_id=resolve_session_id(request.config, request.context),
         )
-        allowed, message = map_validate_response(hl_response)
+        allowed, message = map_validate_response(hl_response, config=request.config)
         if allowed:
             return ValidateGuardrailResponse(verdict=True)
         return ValidateGuardrailResponse(verdict=False, message=message)
@@ -89,7 +89,7 @@ def validate_output(request: OutputGuardrailRequest) -> ValidateGuardrailRespons
             request.config,
             session_id=resolve_session_id(request.config, request.context),
         )
-        allowed, message = map_validate_response(hl_response)
+        allowed, message = map_validate_response(hl_response, config=request.config)
         if allowed:
             return ValidateGuardrailResponse(verdict=True)
         return ValidateGuardrailResponse(verdict=False, message=message)

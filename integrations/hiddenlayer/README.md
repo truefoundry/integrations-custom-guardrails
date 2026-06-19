@@ -6,12 +6,12 @@ FastAPI wrapper that connects the [TrueFoundry AI Gateway](https://docs.truefoun
 
 | Endpoint | Hook | Dashboard Operation | HiddenLayer phase |
 |---|---|---|---|
-| `/validate-input` | `llm_input` | Validate | `input` only — blocks on `Block` / `Redact` |
-| `/validate-output` | `llm_output` | Validate | `output` only — blocks on `Block` / `Redact` |
+| `/validate-input` | `llm_input` | Validate | `input` only — blocks on `Block` / `Redact` / `Alert` |
+| `/validate-output` | `llm_output` | Validate | `output` only — blocks on `Block` / `Redact` / `Alert` |
 | `/redact-input` | `llm_input` | Mutate | `input` — applies `modified_data.input` on `Redact` |
 | `/redact-output` | `llm_output` | Mutate | `output` — applies `modified_data.output` on `Redact` |
 
-`Allow` and `Alert` actions pass through on all rails. Policy enforcement modes (Ignore / Alert / Alert-and-Block) are configured in the HiddenLayer AISec console per Project.
+`Allow` passes on all rails. On **validate** rails, `Alert`, `Block`, and `Redact` return `verdict: false` (set `config.allow_alert_on_validate: true` to pass through HL Alert detections). On **mutate** rails, `Alert` passes unchanged; `Redact` applies `modified_data`; `Block` denies. Policy enforcement modes are configured in the HiddenLayer AISec console per Project.
 
 ## Wrapper HTTP API
 

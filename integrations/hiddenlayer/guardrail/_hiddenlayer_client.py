@@ -40,7 +40,7 @@ MISSING_EVALUATION_MESSAGE = (
 ALLOW_ACTIONS = frozenset({"Allow", "Alert"})
 REDACT_ACTIONS = frozenset({"Redact"})
 BLOCK_ACTIONS = frozenset({"Block"})
-VALIDATE_DENY_ACTIONS = BLOCK_ACTIONS | REDACT_ACTIONS
+VALIDATE_DENY_ACTIONS = BLOCK_ACTIONS | REDACT_ACTIONS | frozenset({"Alert"})
 
 INVALID_CREDENTIALS_MESSAGE = (
     "Invalid HiddenLayer credentials. Verify config.credentials.clientId/clientSecret "
@@ -176,6 +176,11 @@ def resolve_timeout(config: Optional[dict[str, Any]]) -> float:
 
 def resolve_fail_open_on_unavailable(config: Optional[dict[str, Any]]) -> bool:
     return bool(_get_config_value(config, "fail_open_on_unavailable", default=False))
+
+
+def resolve_allow_alert_on_validate(config: Optional[dict[str, Any]]) -> bool:
+    """When true, HL Alert detections pass on validate rails (observe-only). Default: block."""
+    return bool(_get_config_value(config, "allow_alert_on_validate", default=False))
 
 
 def _credentials_cache_key(client_id: str, client_secret: str, auth_base: str) -> str:
@@ -434,7 +439,11 @@ def format_detection_message(response: dict[str, Any]) -> str:
     return f"HiddenLayer guardrail {action.lower()}: {threat_level} threat — {detail}"
 
 
-def map_validate_response(response: dict[str, Any]) -> tuple[bool, Optional[str]]:
+def map_validate_response(
+    response: dict[str, Any],
+    *,
+    config: Optional[dict[str, Any]] = None,
+) -> tuple[bool, Optional[str]]:
     evaluation = _parse_evaluation(response)
     if evaluation is None:
         logger.error("HiddenLayer interactions response missing evaluation object")
@@ -442,7 +451,9 @@ def map_validate_response(response: dict[str, Any]) -> tuple[bool, Optional[str]
 
     action = _normalize_action(evaluation.get("action") or "Allow")
 
-    if action in ALLOW_ACTIONS:
+    if action == "Alert" and resolve_allow_alert_on_validate(config):
+        return True, None
+    if action == "Allow":
         return True, None
     if action in VALIDATE_DENY_ACTIONS:
         return False, format_detection_message(response)
