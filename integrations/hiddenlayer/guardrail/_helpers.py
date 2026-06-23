@@ -1,4 +1,4 @@
-"""Message extraction and payload mapping helpers for HiddenLayer interactions API."""
+"""Payload mapping helpers for HiddenLayer Detection v2 API."""
 
 from __future__ import annotations
 
@@ -22,35 +22,61 @@ def _text_from_content(content: Any) -> str | None:
     return None
 
 
-def tf_messages_to_hl(messages: list[Any]) -> tuple[list[dict[str, str]], list[int]]:
-    """Convert TF chat messages to HL v1 shape, preserving source indices for redaction merge."""
-    hl_messages: list[dict[str, str]] = []
-    source_indices: list[int] = []
-    for index, message in enumerate(messages):
+def tf_message_to_v2(message: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert a TF/OpenAI chat message to v2 interaction canonical form."""
+    text = _text_from_content(message.get("content"))
+    if text is None:
+        return None
+    return {
+        "role": str(message.get("role") or "user"),
+        "content": [{"type": "text", "text": text}],
+    }
+
+
+def tf_messages_to_v2(messages: list[Any]) -> list[dict[str, Any]]:
+    """Convert TF requestBody.messages to v2 interaction.messages."""
+    v2_messages: list[dict[str, Any]] = []
+    for message in messages:
         if not isinstance(message, dict):
             continue
-        role = str(message.get("role") or "user")
-        text = _text_from_content(message.get("content"))
-        if text is not None:
-            hl_messages.append({"role": role, "content": text})
-            source_indices.append(index)
-    return hl_messages, source_indices
+        converted = tf_message_to_v2(message)
+        if converted is not None:
+            v2_messages.append(converted)
+    return v2_messages
 
 
-def tf_choices_to_hl_output(choices: list[Any]) -> tuple[list[dict[str, str]], list[int]]:
-    """Convert responseBody.choices to HL output.messages with source choice indices."""
-    hl_messages: list[dict[str, str]] = []
-    source_indices: list[int] = []
-    for index, choice in enumerate(choices):
+def tf_choices_to_v2_messages(choices: list[Any]) -> list[dict[str, Any]]:
+    """Convert responseBody.choices to v2 assistant interaction messages."""
+    v2_messages: list[dict[str, Any]] = []
+    for choice in choices:
         if not isinstance(choice, dict):
             continue
         message = choice.get("message") or {}
-        text = _text_from_content(message.get("content"))
-        if text is not None:
-            role = str(message.get("role") or "assistant")
-            hl_messages.append({"role": role, "content": text})
-            source_indices.append(index)
-    return hl_messages, source_indices
+        if not isinstance(message, dict):
+            continue
+        converted = tf_message_to_v2({**message, "role": message.get("role") or "assistant"})
+        if converted is not None:
+            v2_messages.append(converted)
+    return v2_messages
+
+
+def interaction_messages_to_texts(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """Flatten v2 interaction messages to (role, text) pairs for comparison."""
+    texts: list[tuple[str, str]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "")
+        parts = message.get("content") or []
+        if isinstance(parts, list):
+            for part in parts:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        texts.append((role, text))
+        elif isinstance(parts, str):
+            texts.append((role, parts))
+    return texts
 
 
 def has_scannable_input_messages(messages: list[Any]) -> bool:
@@ -63,7 +89,7 @@ def has_scannable_input_messages(messages: list[Any]) -> bool:
 
 def has_scannable_output(choices: list[Any]) -> bool:
     """True when the response carries any non-empty assistant completion content."""
-    return bool(tf_choices_to_hl_output(choices)[0])
+    return bool(tf_choices_to_v2_messages(choices))
 
 
 def bodies_differ(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -76,76 +102,41 @@ def clone_body(body: dict[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(body)
 
 
-def _set_message_content(message: dict[str, Any], new_text: str) -> None:
-    content = message.get("content")
-    if isinstance(content, list):
-        updated_parts = False
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                part["text"] = new_text
-                updated_parts = True
-                break
-        if not updated_parts:
-            message["content"] = new_text
-    else:
-        message["content"] = new_text
-
-
-def apply_hl_input_to_request_body(
+def build_v2_metadata(
     request_body: dict[str, Any],
-    modified_input: dict[str, Any],
-    source_indices: list[int],
+    config: Optional[dict[str, Any]],
+    context: Any,
+    *,
+    provider: str,
 ) -> dict[str, Any]:
-    """Merge HiddenLayer modified_data.input back into the TrueFoundry requestBody."""
-    updated = copy.deepcopy(request_body)
-    hl_messages = modified_input.get("messages") or []
-    tf_messages = updated.get("messages") or []
-    if not isinstance(tf_messages, list) or not isinstance(hl_messages, list):
-        return updated
-
-    for hl_index, hl_message in enumerate(hl_messages):
-        if hl_index >= len(source_indices) or not isinstance(hl_message, dict):
-            continue
-        tf_index = source_indices[hl_index]
-        if tf_index >= len(tf_messages):
-            continue
-        tf_message = tf_messages[tf_index]
-        if not isinstance(tf_message, dict):
-            continue
-        hl_content = hl_message.get("content")
-        if isinstance(hl_content, str):
-            _set_message_content(tf_message, hl_content)
-    return updated
+    metadata: dict[str, Any] = {
+        "model": str(request_body.get("model") or "unknown"),
+        "requester_id": resolve_requester_id(config, context),
+        "provider": provider,
+    }
+    session_id = resolve_session_id(config, context)
+    if session_id:
+        metadata["external_session_id"] = session_id
+    return metadata
 
 
-def apply_hl_output_to_response_body(
-    response_body: dict[str, Any],
-    modified_output: dict[str, Any],
-    source_indices: list[int],
+def build_interaction_evaluations_payload(
+    *,
+    request_body: dict[str, Any],
+    config: Optional[dict[str, Any]],
+    context: Any,
+    provider: str,
+    response_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Merge HiddenLayer modified_data.output back into the TrueFoundry responseBody."""
-    updated = copy.deepcopy(response_body)
-    hl_messages = modified_output.get("messages") or []
-    choices = updated.get("choices") or []
-    if not isinstance(choices, list) or not isinstance(hl_messages, list):
-        return updated
+    """Build POST /detection/v2/interaction-evaluations body."""
+    messages = tf_messages_to_v2(request_body.get("messages") or [])
+    if response_body is not None:
+        messages.extend(tf_choices_to_v2_messages(response_body.get("choices") or []))
 
-    for hl_index, hl_message in enumerate(hl_messages):
-        if hl_index >= len(source_indices) or not isinstance(hl_message, dict):
-            continue
-        choice_index = source_indices[hl_index]
-        if choice_index >= len(choices):
-            continue
-        choice = choices[choice_index]
-        if not isinstance(choice, dict):
-            continue
-        message = choice.get("message")
-        if not isinstance(message, dict):
-            continue
-        hl_content = hl_message.get("content")
-        if isinstance(hl_content, str):
-            _set_message_content(message, hl_content)
-    return updated
+    return {
+        "metadata": build_v2_metadata(request_body, config, context, provider=provider),
+        "interaction": {"messages": messages},
+    }
 
 
 def resolve_requester_id(config: Optional[dict[str, Any]], context: Any) -> str:

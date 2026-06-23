@@ -1,10 +1,11 @@
-"""HTTP client for HiddenLayer Runtime Security v1 interactions API."""
+"""HTTP client for HiddenLayer AIDR Detection v2 API."""
 
 from __future__ import annotations
 
 import logging
 import os
 import threading
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
@@ -28,35 +29,28 @@ REGION_ENDPOINTS = {
 DEFAULT_TIMEOUT = 10.0
 MIN_TIMEOUT = 1.0
 MAX_TIMEOUT = 60.0
-INTERACTIONS_PATH = "/detection/v1/interactions"
+REQUEST_EVALUATIONS_PATH = "/detection/v2/request-evaluations"
+RESPONSE_EVALUATIONS_PATH = "/detection/v2/response-evaluations"
+INTERACTION_EVALUATIONS_PATH = "/detection/v2/interaction-evaluations"
 TOKEN_PATH = "/oauth2/token"
+RUNTIME_ACTION_HEADER = "HL-Runtime-Action"
 DEFAULT_PROVIDER = "truefoundry"
 MAX_LOG_BODY_CHARS = 200
 
-MISSING_EVALUATION_MESSAGE = (
-    "HiddenLayer guardrail error: API response missing evaluation object"
+MISSING_OUTCOME_MESSAGE = (
+    "HiddenLayer guardrail error: interaction-evaluations response missing outcome object"
 )
 
-ALLOW_ACTIONS = frozenset({"Allow", "Alert"})
-REDACT_ACTIONS = frozenset({"Redact"})
-BLOCK_ACTIONS = frozenset({"Block"})
-VALIDATE_DENY_ACTIONS = BLOCK_ACTIONS | REDACT_ACTIONS | frozenset({"Alert"})
+V2_PASS_ACTIONS = frozenset({"NONE"})
+V2_DENY_ACTIONS = frozenset({"DETECT", "REDACT", "BLOCK"})
 
 INVALID_CREDENTIALS_MESSAGE = (
-    "Invalid HiddenLayer credentials. Verify config.credentials.clientId/clientSecret "
-    "or HIDDENLAYER_CLIENT_ID/HIDDENLAYER_CLIENT_SECRET."
+    "Invalid HiddenLayer credentials. Verify HIDDENLAYER_CLIENT_ID/HIDDENLAYER_CLIENT_SECRET."
 )
 
 FORBIDDEN_MESSAGE = (
     "HiddenLayer API forbidden. Verify HL-Project-Id, credential permissions, and tenant region."
 )
-
-_ACTION_ALIASES = {
-    "allow": "Allow",
-    "alert": "Alert",
-    "redact": "Redact",
-    "block": "Block",
-}
 
 _INVALID_CREDENTIAL_PHRASES = (
     "invalid client",
@@ -73,6 +67,14 @@ _token_cache: dict[str, Any] = {
     "access_token": None,
     "cache_key": None,
 }
+
+
+@dataclass(frozen=True)
+class InlineEvaluationResult:
+    """Response from v2 request/response-evaluations inline endpoints."""
+
+    body: dict[str, Any]
+    runtime_action: Optional[str]
 
 
 class HiddenLayerApiError(Exception):
@@ -113,16 +115,14 @@ def resolve_api_base(config: Optional[dict[str, Any]]) -> str:
     override = _get_config_value(config, "api_base") or os.getenv("HIDDENLAYER_API_BASE", "").strip()
     if override:
         return override.rstrip("/")
-    region = resolve_region(config)
-    return REGION_ENDPOINTS[region]["api_base"]
+    return REGION_ENDPOINTS[resolve_region(config)]["api_base"]
 
 
 def resolve_auth_base(config: Optional[dict[str, Any]]) -> str:
     override = _get_config_value(config, "auth_base") or os.getenv("HIDDENLAYER_AUTH_BASE", "").strip()
     if override:
         return override.rstrip("/")
-    region = resolve_region(config)
-    return REGION_ENDPOINTS[region]["auth_base"]
+    return REGION_ENDPOINTS[resolve_region(config)]["auth_base"]
 
 
 def resolve_client_credentials(config: Optional[dict[str, Any]]) -> tuple[str, str]:
@@ -144,8 +144,8 @@ def resolve_client_credentials(config: Optional[dict[str, Any]]) -> tuple[str, s
         raise HTTPException(
             status_code=500,
             detail=(
-                "HiddenLayer credentials not configured. Set config.credentials.clientId/clientSecret "
-                "or HIDDENLAYER_CLIENT_ID/HIDDENLAYER_CLIENT_SECRET."
+                "HiddenLayer credentials not configured. Set HIDDENLAYER_CLIENT_ID "
+                "and HIDDENLAYER_CLIENT_SECRET."
             ),
         )
     return client_id, client_secret
@@ -162,12 +162,8 @@ def resolve_project_id(config: Optional[dict[str, Any]]) -> Optional[str]:
 
 
 def ensure_project_id(config: Optional[dict[str, Any]]) -> str:
-    """HiddenLayer policy (detections + redaction) requires HL-Project-Id."""
     if os.getenv("HIDDENLAYER_SKIP_PROJECT_ID_CHECK", "").strip().lower() in ("1", "true", "yes"):
-        project_id = resolve_project_id(config)
-        if project_id:
-            return project_id
-        return "default"
+        return resolve_project_id(config) or "default"
 
     project_id = resolve_project_id(config)
     if not project_id:
@@ -175,8 +171,7 @@ def ensure_project_id(config: Optional[dict[str, Any]]) -> str:
             status_code=500,
             detail=(
                 "HiddenLayer project ID not configured. Set HIDDENLAYER_PROJECT_ID in the service "
-                "environment (TrueFoundry / Render). This selects the AISec policy that controls "
-                "detection and redaction."
+                "environment. This selects the AISec policy that controls detection and redaction."
             ),
         )
     return project_id
@@ -191,21 +186,36 @@ def resolve_timeout(config: Optional[dict[str, Any]]) -> float:
     timeout = _get_config_value(config, "timeout")
     if timeout is None:
         timeout = os.getenv("HIDDENLAYER_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT))
-    value = float(timeout)
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Invalid HIDDENLAYER_TIMEOUT_SECONDS or config.timeout: {timeout!r}",
+        ) from exc
     return max(MIN_TIMEOUT, min(MAX_TIMEOUT, value))
 
 
 def resolve_fail_open_on_unavailable(config: Optional[dict[str, Any]]) -> bool:
-    return bool(_get_config_value(config, "fail_open_on_unavailable", default=False))
-
-
-def resolve_allow_alert_on_validate(config: Optional[dict[str, Any]]) -> bool:
-    env_val = os.getenv("HIDDENLAYER_ALLOW_ALERT_ON_VALIDATE", "").strip().lower()
+    env_val = os.getenv("HIDDENLAYER_FAIL_OPEN_ON_UNAVAILABLE", "").strip().lower()
     if env_val in ("1", "true", "yes"):
         return True
     if env_val in ("0", "false", "no"):
         return False
-    return bool(_get_config_value(config, "allow_alert_on_validate", default=False))
+    return bool(_get_config_value(config, "fail_open_on_unavailable", default=False))
+
+
+def resolve_allow_detect_on_validate(config: Optional[dict[str, Any]]) -> bool:
+    for env_key in ("HIDDENLAYER_ALLOW_DETECT_ON_VALIDATE", "HIDDENLAYER_ALLOW_ALERT_ON_VALIDATE"):
+        env_val = os.getenv(env_key, "").strip().lower()
+        if env_val in ("1", "true", "yes"):
+            return True
+        if env_val in ("0", "false", "no"):
+            return False
+    return bool(
+        _get_config_value(config, "allow_detect_on_validate")
+        or _get_config_value(config, "allow_alert_on_validate", default=False)
+    )
 
 
 def _credentials_cache_key(client_id: str, client_secret: str, auth_base: str) -> str:
@@ -221,8 +231,6 @@ TOKEN_FORM_BODY = "grant_type=client_credentials"
 
 
 def _fetch_access_token(client_id: str, client_secret: str, auth_base: str, timeout: float) -> str:
-    # Match HL docs / curl: POST with HTTP Basic auth and form-urlencoded grant_type body.
-    # https://auth.hiddenlayer.ai/oauth2/token  -d "grant_type=client_credentials"
     url = f"{auth_base}{TOKEN_PATH}"
     try:
         with httpx.Client(timeout=timeout) as client:
@@ -241,10 +249,8 @@ def _fetch_access_token(client_id: str, client_secret: str, auth_base: str, time
 
     if response.status_code == 401:
         raise HiddenLayerApiError(INVALID_CREDENTIALS_MESSAGE, status_code=401)
-
     if response.status_code == 403:
         raise HiddenLayerApiError(FORBIDDEN_MESSAGE, status_code=403)
-
     if not response.is_success:
         raise HiddenLayerApiError(
             f"HiddenLayer auth API returned {response.status_code}: {response.text.strip()}",
@@ -298,9 +304,16 @@ def _parse_error_body(response: httpx.Response) -> Optional[dict[str, Any]]:
         return None
 
 
-def _normalize_action(action: Any) -> str:
-    raw = str(action or "Allow").strip()
-    return _ACTION_ALIASES.get(raw.lower(), raw)
+def _normalize_v2_action(action: Any) -> str:
+    return str(action or "NONE").strip().upper()
+
+
+def _runtime_action(response: httpx.Response) -> Optional[str]:
+    value = response.headers.get(RUNTIME_ACTION_HEADER)
+    if value is None:
+        return None
+    normalized = str(value).strip().upper()
+    return normalized or None
 
 
 def _safe_response_snippet(response: httpx.Response, limit: int = MAX_LOG_BODY_CHARS) -> str:
@@ -310,11 +323,6 @@ def _safe_response_snippet(response: httpx.Response, limit: int = MAX_LOG_BODY_C
     return f"{text[:limit]}... (truncated)"
 
 
-def _parse_evaluation(response: dict[str, Any]) -> Optional[dict[str, Any]]:
-    evaluation = response.get("evaluation")
-    return evaluation if isinstance(evaluation, dict) else None
-
-
 def _body_indicates_invalid_credentials(
     status_code: int,
     body_text: str,
@@ -322,30 +330,17 @@ def _body_indicates_invalid_credentials(
 ) -> bool:
     if status_code == 401:
         return True
-
     if status_code == 403:
         return False
-
     haystack = body_text.lower()
     if any(phrase in haystack for phrase in _INVALID_CREDENTIAL_PHRASES):
         return True
-
     if not body_json:
         return False
-
     for field in ("message", "error", "detail", "description", "title"):
         value = body_json.get(field)
         if isinstance(value, str) and any(phrase in value.lower() for phrase in _INVALID_CREDENTIAL_PHRASES):
             return True
-
-    detail = body_json.get("detail")
-    if isinstance(detail, list):
-        for item in detail:
-            if isinstance(item, dict):
-                msg = item.get("msg")
-                if isinstance(msg, str) and any(phrase in msg.lower() for phrase in _INVALID_CREDENTIAL_PHRASES):
-                    return True
-
     return False
 
 
@@ -355,7 +350,6 @@ def _hiddenlayer_http_error(response: httpx.Response) -> HiddenLayerApiError:
 
     if _body_indicates_invalid_credentials(response.status_code, body_text, body_json):
         return HiddenLayerApiError(INVALID_CREDENTIALS_MESSAGE, status_code=401)
-
     if response.status_code == 403:
         return HiddenLayerApiError(FORBIDDEN_MESSAGE, status_code=403)
 
@@ -380,30 +374,17 @@ def _hiddenlayer_http_error(response: httpx.Response) -> HiddenLayerApiError:
     )
 
 
-def build_interactions_payload(
-    *,
-    metadata: dict[str, Any],
-    input_messages: Optional[list[dict[str, str]]] = None,
-    output_messages: Optional[list[dict[str, str]]] = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {"metadata": metadata}
-    if input_messages:
-        payload["input"] = {"messages": input_messages}
-    if output_messages:
-        payload["output"] = {"messages": output_messages}
-    return payload
-
-
-def call_hiddenlayer_interactions(
+def _post_hiddenlayer(
+    path: str,
     payload: dict[str, Any],
     config: Optional[dict[str, Any]],
     *,
     session_id: Optional[str] = None,
-) -> dict[str, Any]:
+) -> httpx.Response:
     api_base = resolve_api_base(config)
     timeout = resolve_timeout(config)
     project_id = ensure_project_id(config)
-    url = f"{api_base}{INTERACTIONS_PATH}"
+    url = f"{api_base}{path}"
 
     headers = {
         "Authorization": f"Bearer {get_access_token(config)}",
@@ -434,94 +415,192 @@ def call_hiddenlayer_interactions(
             _safe_response_snippet(response),
         )
         raise _hiddenlayer_http_error(response)
+    return response
 
+
+def call_request_evaluations(
+    request_body: dict[str, Any],
+    config: Optional[dict[str, Any]],
+    *,
+    session_id: Optional[str] = None,
+) -> InlineEvaluationResult:
+    """POST /detection/v2/request-evaluations — inline pre-model scan."""
+    response = _post_hiddenlayer(
+        REQUEST_EVALUATIONS_PATH,
+        request_body,
+        config,
+        session_id=session_id,
+    )
     try:
         body = response.json()
     except ValueError as exc:
         raise HiddenLayerApiError(f"Invalid JSON from HiddenLayer API: {exc}") from exc
+    if not isinstance(body, dict):
+        raise HiddenLayerApiError("HiddenLayer API response was not a JSON object")
+    return InlineEvaluationResult(body=body, runtime_action=_runtime_action(response))
 
+
+def call_response_evaluations(
+    response_body: dict[str, Any],
+    config: Optional[dict[str, Any]],
+    *,
+    session_id: Optional[str] = None,
+) -> InlineEvaluationResult:
+    """POST /detection/v2/response-evaluations — inline post-model scan."""
+    response = _post_hiddenlayer(
+        RESPONSE_EVALUATIONS_PATH,
+        response_body,
+        config,
+        session_id=session_id,
+    )
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise HiddenLayerApiError(f"Invalid JSON from HiddenLayer API: {exc}") from exc
+    if not isinstance(body, dict):
+        raise HiddenLayerApiError("HiddenLayer API response was not a JSON object")
+    return InlineEvaluationResult(body=body, runtime_action=_runtime_action(response))
+
+
+def call_interaction_evaluations(
+    payload: dict[str, Any],
+    config: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """POST /detection/v2/interaction-evaluations — full structured evaluation."""
+    response = _post_hiddenlayer(INTERACTION_EVALUATIONS_PATH, payload, config)
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise HiddenLayerApiError(f"Invalid JSON from HiddenLayer API: {exc}") from exc
     if not isinstance(body, dict):
         raise HiddenLayerApiError("HiddenLayer API response was not a JSON object")
     return body
 
 
-def format_detection_message(response: dict[str, Any]) -> str:
-    evaluation = response.get("evaluation") or {}
-    action = _normalize_action(evaluation.get("action") or "Block")
-    threat_level = str(evaluation.get("threat_level") or "Unknown")
+def _parse_outcome(response: dict[str, Any]) -> Optional[dict[str, Any]]:
+    outcome = response.get("outcome")
+    return outcome if isinstance(outcome, dict) else None
 
-    detected_analyzers: list[str] = []
-    for analyzer in response.get("analysis") or []:
-        if not isinstance(analyzer, dict) or not analyzer.get("detected"):
-            continue
-        name = analyzer.get("name", "detection")
-        phase = analyzer.get("phase")
-        suffix = f" ({phase})" if phase else ""
-        detected_analyzers.append(f"{name}{suffix}")
 
-    detail = "; ".join(detected_analyzers) if detected_analyzers else "policy violation"
+def format_outcome_message(response: dict[str, Any]) -> str:
+    outcome = response.get("outcome") or {}
+    action = _normalize_v2_action(outcome.get("action"))
+    threat_level = str(outcome.get("threat_level") or "Unknown")
+
+    detections = outcome.get("detections") or []
+    rule_names: list[str] = []
+    for item in detections:
+        if isinstance(item, dict):
+            name = item.get("rule_name")
+            if isinstance(name, str) and name.strip():
+                rule_names.append(name.strip())
+
+    if not rule_names:
+        for message in (response.get("evaluated_interaction") or {}).get("messages") or []:
+            if not isinstance(message, dict):
+                continue
+            analysis = message.get("analysis")
+            signals = analysis.get("signals") if isinstance(analysis, dict) else None
+            if not isinstance(signals, dict):
+                continue
+            prompt_injection = signals.get("prompt_injection")
+            if isinstance(prompt_injection, dict) and prompt_injection.get("detected"):
+                rule_names.append("prompt_injection")
+                break
+            pii = signals.get("personally_identifiable_information")
+            if isinstance(pii, dict):
+                entities = pii.get("entities")
+                if isinstance(entities, list) and entities:
+                    rule_names.append("personally_identifiable_information")
+
+    detail = "; ".join(rule_names) if rule_names else "policy violation"
     return f"HiddenLayer guardrail {action.lower()}: {threat_level} threat — {detail}"
+
+
+def _effective_interaction_changed(response: dict[str, Any], original_messages: list[dict[str, Any]]) -> bool:
+    """True when effective_interaction text differs from the submitted interaction."""
+    from guardrail._helpers import interaction_messages_to_texts
+
+    outcome = response.get("outcome") or {}
+    effective = outcome.get("effective_interaction") or {}
+    effective_messages = effective.get("messages") or []
+    if not isinstance(effective_messages, list) or not effective_messages:
+        return False
+    return interaction_messages_to_texts(original_messages) != interaction_messages_to_texts(effective_messages)
 
 
 def map_validate_response(
     response: dict[str, Any],
     *,
+    original_messages: list[dict[str, Any]],
     config: Optional[dict[str, Any]] = None,
+) -> tuple[bool, Optional[str], str]:
+    outcome = _parse_outcome(response)
+    if outcome is None:
+        logger.error("HiddenLayer interaction-evaluations response missing outcome object")
+        return False, MISSING_OUTCOME_MESSAGE, "NONE"
+
+    action = _normalize_v2_action(outcome.get("action"))
+
+    if action == "DETECT" and resolve_allow_detect_on_validate(config):
+        return True, None, action
+    if action in V2_PASS_ACTIONS:
+        if _effective_interaction_changed(response, original_messages):
+            return False, format_outcome_message(
+                {**response, "outcome": {**outcome, "action": "REDACT"}}
+            ), action
+        return True, None, action
+    if action in V2_DENY_ACTIONS:
+        return False, format_outcome_message(response), action
+
+    logger.warning("Unknown HiddenLayer outcome.action '%s'; treating as allow", action)
+    return True, None, action
+
+
+INLINE_VALIDATE_DENY_MESSAGE = (
+    "HiddenLayer guardrail redact: sensitive content detected — use mutate rail to apply redaction"
+)
+
+
+def check_inline_validate_enforcement(
+    *,
+    original_body: dict[str, Any],
+    config: Optional[dict[str, Any]],
+    session_id: Optional[str],
+    phase: str,
 ) -> tuple[bool, Optional[str]]:
-    evaluation = _parse_evaluation(response)
-    if evaluation is None:
-        logger.error("HiddenLayer interactions response missing evaluation object")
-        return False, MISSING_EVALUATION_MESSAGE
+    """Fallback when interaction-evaluations returns NONE but inline endpoints enforced redaction."""
+    try:
+        if phase == "output":
+            result = call_response_evaluations(original_body, config, session_id=session_id)
+        else:
+            result = call_request_evaluations(original_body, config, session_id=session_id)
+    except HiddenLayerApiError:
+        raise
 
-    action = _normalize_action(evaluation.get("action") or "Allow")
-
-    if action == "Alert" and resolve_allow_alert_on_validate(config):
-        return True, None
-    if action == "Allow":
-        return True, None
-    if action in VALIDATE_DENY_ACTIONS:
-        return False, format_detection_message(response)
-
-    logger.warning("Unknown HiddenLayer evaluation.action '%s'; treating as allow", action)
+    runtime_action = _normalize_v2_action(result.runtime_action) if result.runtime_action else None
+    if runtime_action == "BLOCK":
+        return False, "HiddenLayer guardrail block: HIGH threat — inline policy block"
+    if bodies_differ(original_body, result.body):
+        return False, INLINE_VALIDATE_DENY_MESSAGE
     return True, None
 
 
-def map_redact_response(
-    response: dict[str, Any],
+def map_inline_mutate_response(
+    result: InlineEvaluationResult,
     *,
     original_body: dict[str, Any],
-    modified_body: dict[str, Any],
 ) -> tuple[bool, bool, dict[str, Any], Optional[str]]:
-    evaluation = _parse_evaluation(response)
-    if evaluation is None:
-        logger.error("HiddenLayer interactions response missing evaluation object")
-        return True, False, original_body, None
+    runtime_action = _normalize_v2_action(result.runtime_action) if result.runtime_action else None
+    modified_body = result.body
 
-    action = _normalize_action(evaluation.get("action") or "Allow")
-    has_detections = bool(evaluation.get("has_detections"))
+    if runtime_action == "BLOCK":
+        block_body = modified_body if bodies_differ(original_body, modified_body) else original_body
+        return False, False, block_body, "HiddenLayer guardrail block: HIGH threat — inline policy block"
 
-    if action in ALLOW_ACTIONS:
-        if bodies_differ(original_body, modified_body):
-            logger.info(
-                "HiddenLayer mutate rail applying modified_data despite action=%s", action
-            )
-            return True, True, modified_body, None
-        if has_detections:
-            logger.warning(
-                "HiddenLayer mutate rail: action=%s with detections but unchanged payload. "
-                "Set the analyzer enforcement to Redact (not Alert-only) in the AISec console.",
-                action,
-            )
-        return True, False, original_body, None
-    if action in REDACT_ACTIONS:
-        if bodies_differ(original_body, modified_body):
-            return True, True, modified_body, None
-        return True, False, original_body, None
-    if action in BLOCK_ACTIONS:
-        block_result = modified_body if bodies_differ(original_body, modified_body) else original_body
-        return False, False, block_result, format_detection_message(response)
+    if bodies_differ(original_body, modified_body):
+        return True, True, modified_body, None
 
-    logger.warning("Unknown HiddenLayer evaluation.action '%s'; passing through unchanged", action)
     return True, False, original_body, None
 
 

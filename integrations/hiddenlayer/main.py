@@ -1,8 +1,11 @@
 """FastAPI app for the HiddenLayer custom-guardrail wrapper.
 
-HiddenLayer Runtime Security (v1/interactions) powers validate and redact rails.
-This service translates TrueFoundry guardrail requests to HiddenLayer's
-interactions API and maps evaluation.action back to the gateway contract.
+HiddenLayer AIDR Detection v2 powers validate and mutate rails.
+This service translates TrueFoundry guardrail requests to HiddenLayer v2 APIs:
+
+    Validate rails  -> POST /detection/v2/interaction-evaluations
+    Mutate rails    -> POST /detection/v2/request-evaluations (input)
+                       POST /detection/v2/response-evaluations (output)
 
 Endpoints:
     GET  /                       health check (open)
@@ -61,8 +64,8 @@ def require_bearer(request: Request) -> None:
 
 app = FastAPI(
     title="hiddenlayer-guardrails-tfy",
-    description="HiddenLayer Runtime Security rails behind the TrueFoundry custom-guardrail contract.",
-    version="1.0.0",
+    description="HiddenLayer AIDR Detection v2 rails behind the TrueFoundry custom-guardrail contract.",
+    version="2.0.0",
 )
 
 
@@ -101,6 +104,10 @@ async def debug_loaded_config() -> dict:
             "output": [p for p in RAIL_ROUTES if p.endswith("-output")],
         },
         "hiddenlayer_region": region,
+        "hiddenlayer_api_version": "v2",
+        "hiddenlayer_request_evaluations_path": "/detection/v2/request-evaluations",
+        "hiddenlayer_response_evaluations_path": "/detection/v2/response-evaluations",
+        "hiddenlayer_interaction_evaluations_path": "/detection/v2/interaction-evaluations",
         "hiddenlayer_api_base": os.environ.get("HIDDENLAYER_API_BASE", endpoints["api_base"]),
         "hiddenlayer_auth_base": os.environ.get("HIDDENLAYER_AUTH_BASE", endpoints["auth_base"]),
         "hiddenlayer_project_id_configured": bool(os.environ.get("HIDDENLAYER_PROJECT_ID", "").strip()),
