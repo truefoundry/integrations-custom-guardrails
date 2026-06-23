@@ -401,7 +401,7 @@ def _post_hiddenlayer(
                 _invalidate_token_cache()
                 headers["Authorization"] = f"Bearer {get_access_token(config, force_refresh=True)}"
                 response = client.post(url, json=payload, headers=headers)
-            elif response.status_code == 503:
+            if response.status_code == 503:
                 logger.warning("HiddenLayer API returned 503; retrying once")
                 response = client.post(url, json=payload, headers=headers)
     except httpx.RequestError as exc:

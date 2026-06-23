@@ -521,6 +521,27 @@ def test_token_refresh_on_401(client: TestClient, auth: dict[str, str], mock_env
 
 
 @respx.mock
+def test_token_refresh_then_503_retries_once(
+    client: TestClient, auth: dict[str, str], mock_env: None
+) -> None:
+    from guardrail._hiddenlayer_client import _invalidate_token_cache
+
+    _invalidate_token_cache()
+    token_route = respx.post(_TOKEN_URL).respond(json={"access_token": "rotated-token"})
+    eval_route = respx.post(_INTERACTION_EVAL_URL)
+    eval_route.side_effect = [
+        httpx.Response(401, json={"detail": "token expired"}),
+        httpx.Response(503, text="unavailable"),
+        httpx.Response(200, json=_allow_interaction_response("hi")),
+    ]
+    _register_inline_allow("hi")
+    response = client.post("/validate-input", headers=auth, json=_input_body("hi"))
+    assert response.status_code == 200
+    assert token_route.call_count == 2
+    assert eval_route.call_count == 3
+
+
+@respx.mock
 def test_hiddenlayer_503_retries_once(client: TestClient, auth: dict[str, str], mock_env: None) -> None:
     _register_token_route()
     route = respx.post(_INTERACTION_EVAL_URL)
