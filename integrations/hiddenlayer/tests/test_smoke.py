@@ -18,6 +18,10 @@ try:
 except ImportError:
     pass
 
+# The smoke suite runs without a WRAPPER_API_KEY. require_bearer now fails CLOSED (503) when no
+# real key is configured, so opt the test app into local-dev mode unless the env already chose.
+os.environ.setdefault("ALLOW_NO_AUTH", "true")
+
 
 _HIDDENLAYER_LIVE = bool(
     os.environ.get("HIDDENLAYER_CLIENT_ID", "").strip()
@@ -556,15 +560,47 @@ def test_hiddenlayer_503_retries_once(client: TestClient, auth: dict[str, str], 
 
 
 @respx.mock
-def test_hiddenlayer_5xx_propagates(client: TestClient, auth: dict[str, str], mock_env: None) -> None:
+def test_unavailable_fail_open_is_default(
+    client: TestClient, auth: dict[str, str], mock_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default posture: HiddenLayer 5xx/outage with nothing configured -> fail OPEN (allow)."""
+    monkeypatch.delenv("HIDDENLAYER_FAIL_OPEN_ON_UNAVAILABLE", raising=False)
     _register_token_route()
     respx.post(_INTERACTION_EVAL_URL).respond(status_code=503)
     response = client.post("/validate-input", headers=auth, json=_input_body("hi"))
+    assert response.status_code == 200
+    assert response.json()["verdict"] is True
+
+
+@respx.mock
+def test_fail_closed_via_config(
+    client: TestClient, auth: dict[str, str], mock_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-request config can force fail CLOSED: a 5xx then propagates as an error."""
+    monkeypatch.delenv("HIDDENLAYER_FAIL_OPEN_ON_UNAVAILABLE", raising=False)
+    _register_token_route()
+    respx.post(_INTERACTION_EVAL_URL).respond(status_code=503)
+    config = {**CONFIG, "fail_open_on_unavailable": False}
+    response = client.post("/validate-input", headers=auth, json=_input_body("hi", config=config))
     assert response.status_code >= 500
 
 
 @respx.mock
-def test_unavailable_fail_open(client: TestClient, auth: dict[str, str], mock_env: None) -> None:
+def test_fail_closed_via_env(
+    client: TestClient, auth: dict[str, str], mock_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Env HIDDENLAYER_FAIL_OPEN_ON_UNAVAILABLE=false forces fail CLOSED and overrides config."""
+    monkeypatch.setenv("HIDDENLAYER_FAIL_OPEN_ON_UNAVAILABLE", "false")
+    _register_token_route()
+    respx.post(_INTERACTION_EVAL_URL).respond(status_code=503)
+    config = {**CONFIG, "fail_open_on_unavailable": True}
+    response = client.post("/validate-input", headers=auth, json=_input_body("hi", config=config))
+    assert response.status_code >= 500
+
+
+@respx.mock
+def test_unavailable_fail_open_explicit(client: TestClient, auth: dict[str, str], mock_env: None) -> None:
+    """Explicit config fail_open_on_unavailable=true still allows on 5xx."""
     _register_token_route()
     respx.post(_INTERACTION_EVAL_URL).respond(status_code=503)
     config = {**CONFIG, "fail_open_on_unavailable": True}
@@ -655,3 +691,85 @@ def test_redact_input_pii_transforms(client: TestClient, auth: dict[str, str]) -
     content = body["result"]["messages"][0]["content"]
     if body["transformed"]:
         assert "[REDACTED:" in content
+
+
+# --- Security regression tests --------------------------------------------------------------
+
+
+def test_auth_fails_closed_without_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M1: no real key + no ALLOW_NO_AUTH -> 503 (fail closed), never silently open."""
+    monkeypatch.delenv("WRAPPER_API_KEY", raising=False)
+    monkeypatch.delenv("ALLOW_NO_AUTH", raising=False)
+    response = client.post("/validate-input", json=_input_body("hi"))
+    assert response.status_code == 503
+
+
+def test_auth_rejects_placeholder_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N1: the committed .env.example placeholder must not count as a configured key."""
+    monkeypatch.setenv("WRAPPER_API_KEY", "change-me-to-a-random-string")
+    monkeypatch.delenv("ALLOW_NO_AUTH", raising=False)
+    response = client.post(
+        "/validate-input",
+        headers={"Authorization": "Bearer change-me-to-a-random-string"},
+        json=_input_body("hi"),
+    )
+    assert response.status_code == 503
+
+
+@respx.mock
+def test_auth_enforced_with_real_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, mock_env: None
+) -> None:
+    """With a real key set, missing/wrong tokens -> 401 and the correct token -> 200."""
+    monkeypatch.setenv("WRAPPER_API_KEY", "s3cr3t-strong-key")
+    monkeypatch.delenv("ALLOW_NO_AUTH", raising=False)
+    assert client.post("/validate-input", json=_input_body("hi")).status_code == 401
+    assert (
+        client.post(
+            "/validate-input",
+            headers={"Authorization": "Bearer wrong-key"},
+            json=_input_body("hi"),
+        ).status_code
+        == 401
+    )
+    _register_token_route()
+    respx.post(_INTERACTION_EVAL_URL).respond(json=_allow_interaction_response())
+    _register_inline_allow()
+    ok = client.post(
+        "/validate-input",
+        headers={"Authorization": "Bearer s3cr3t-strong-key"},
+        json=_input_body("hello"),
+    )
+    assert ok.status_code == 200
+    assert ok.json()["verdict"] is True
+
+
+@respx.mock
+def test_config_cannot_override_host(
+    client: TestClient, auth: dict[str, str], mock_env: None
+) -> None:
+    """C1/C2: a config-supplied api_base/auth_base must NOT redirect HiddenLayer traffic.
+
+    Only the legitimate env-resolved mock host is registered with respx. If the wrapper
+    honored config.api_base/auth_base (the SSRF vuln), it would call the attacker host and
+    respx would raise a routing error instead of returning 200.
+    """
+    _register_token_route()
+    respx.post(_INTERACTION_EVAL_URL).respond(json=_allow_interaction_response())
+    _register_inline_allow()
+    attacker_config = {
+        **CONFIG,
+        "api_base": "https://attacker.invalid",
+        "auth_base": "https://attacker.invalid",
+        "credentials": {"clientId": "evil", "clientSecret": "evil"},
+        "projectId": "attacker-project",
+    }
+    response = client.post("/validate-input", headers=auth, json=_input_body("hello", attacker_config))
+    assert response.status_code == 200
+    assert response.json()["verdict"] is True
+    # Traffic went to the env-resolved host, not the attacker's.
+    assert all("attacker.invalid" not in str(call.request.url) for call in respx.calls)
