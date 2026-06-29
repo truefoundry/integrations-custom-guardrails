@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import threading
 from dataclasses import dataclass
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException
@@ -97,11 +99,40 @@ def _get_config_value(config: Optional[dict[str, Any]], *keys: str, default: Any
     return value if value is not None else default
 
 
-def resolve_region(config: Optional[dict[str, Any]]) -> str:
-    region = (
-        _get_config_value(config, "region")
-        or os.getenv("HIDDENLAYER_REGION", DEFAULT_REGION)
+# SECURITY: region / host / credential / project resolution is SERVER-SIDE ONLY.
+#
+# The per-request `config` dict is relayed verbatim from the gateway request body and is NOT
+# a trust boundary — anyone who can reach this wrapper can supply arbitrary `config`. Honoring
+# config-supplied `api_base`/`auth_base`/`region`/`credentials`/`projectId` would let a caller
+# redirect HiddenLayer traffic (and the OAuth client_secret / bearer token) to an arbitrary
+# host (SSRF / credential exfiltration) or select a weaker AISec policy. These values are
+# therefore resolved exclusively from the operator-controlled service environment. The
+# `config` parameter is retained for call-site compatibility but intentionally ignored here.
+
+
+def _validate_base_url(url: str, *, field: str) -> str:
+    """Require an https:// base (operator env override). http:// only with an explicit opt-in."""
+    cleaned = url.rstrip("/")
+    scheme = urlparse(cleaned).scheme
+    if scheme == "https":
+        return cleaned
+    if scheme == "http" and os.getenv("HIDDENLAYER_ALLOW_INSECURE_BASE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return cleaned
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            f"Refusing non-HTTPS HiddenLayer {field} '{cleaned}'. Use an https:// base, or set "
+            "HIDDENLAYER_ALLOW_INSECURE_BASE=true for local testing only."
+        ),
     )
+
+
+def resolve_region(config: Optional[dict[str, Any]] = None) -> str:
+    region = os.getenv("HIDDENLAYER_REGION", DEFAULT_REGION)
     normalized = str(region).strip().lower()
     if normalized not in REGION_ENDPOINTS:
         raise HTTPException(
@@ -111,35 +142,23 @@ def resolve_region(config: Optional[dict[str, Any]]) -> str:
     return normalized
 
 
-def resolve_api_base(config: Optional[dict[str, Any]]) -> str:
-    override = _get_config_value(config, "api_base") or os.getenv("HIDDENLAYER_API_BASE", "").strip()
+def resolve_api_base(config: Optional[dict[str, Any]] = None) -> str:
+    override = os.getenv("HIDDENLAYER_API_BASE", "").strip()
     if override:
-        return override.rstrip("/")
+        return _validate_base_url(override, field="api_base")
     return REGION_ENDPOINTS[resolve_region(config)]["api_base"]
 
 
-def resolve_auth_base(config: Optional[dict[str, Any]]) -> str:
-    override = _get_config_value(config, "auth_base") or os.getenv("HIDDENLAYER_AUTH_BASE", "").strip()
+def resolve_auth_base(config: Optional[dict[str, Any]] = None) -> str:
+    override = os.getenv("HIDDENLAYER_AUTH_BASE", "").strip()
     if override:
-        return override.rstrip("/")
+        return _validate_base_url(override, field="auth_base")
     return REGION_ENDPOINTS[resolve_region(config)]["auth_base"]
 
 
-def resolve_client_credentials(config: Optional[dict[str, Any]]) -> tuple[str, str]:
-    client_id = (
-        _get_config_value(config, "credentials", "clientId")
-        or _get_config_value(config, "credentials", "client_id")
-        or _get_config_value(config, "clientId")
-        or _get_config_value(config, "client_id")
-        or os.getenv("HIDDENLAYER_CLIENT_ID", "").strip()
-    )
-    client_secret = (
-        _get_config_value(config, "credentials", "clientSecret")
-        or _get_config_value(config, "credentials", "client_secret")
-        or _get_config_value(config, "clientSecret")
-        or _get_config_value(config, "client_secret")
-        or os.getenv("HIDDENLAYER_CLIENT_SECRET", "").strip()
-    )
+def resolve_client_credentials(config: Optional[dict[str, Any]] = None) -> tuple[str, str]:
+    client_id = os.getenv("HIDDENLAYER_CLIENT_ID", "").strip()
+    client_secret = os.getenv("HIDDENLAYER_CLIENT_SECRET", "").strip()
     if not client_id or not client_secret:
         raise HTTPException(
             status_code=500,
@@ -151,13 +170,8 @@ def resolve_client_credentials(config: Optional[dict[str, Any]]) -> tuple[str, s
     return client_id, client_secret
 
 
-def resolve_project_id(config: Optional[dict[str, Any]]) -> Optional[str]:
-    project_id = (
-        _get_config_value(config, "projectId")
-        or _get_config_value(config, "project_id")
-        or _get_config_value(config, "hlProjectId")
-        or os.getenv("HIDDENLAYER_PROJECT_ID", "").strip()
-    )
+def resolve_project_id(config: Optional[dict[str, Any]] = None) -> Optional[str]:
+    project_id = os.getenv("HIDDENLAYER_PROJECT_ID", "").strip()
     return project_id or None
 
 
@@ -197,12 +211,21 @@ def resolve_timeout(config: Optional[dict[str, Any]]) -> float:
 
 
 def resolve_fail_open_on_unavailable(config: Optional[dict[str, Any]]) -> bool:
+    """Whether to allow traffic through when HiddenLayer is unavailable (5xx/timeout).
+
+    DEFAULT: fail OPEN (allow). Precedence: env HIDDENLAYER_FAIL_OPEN_ON_UNAVAILABLE wins,
+    then per-request config `fail_open_on_unavailable`, else default True. To fail CLOSED
+    (block on outage) set either the env var or config to false.
+
+    Security note: with the default, a HiddenLayer outage means traffic passes UNSCANNED.
+    Set fail-closed for safety-critical rails where an outage should block.
+    """
     env_val = os.getenv("HIDDENLAYER_FAIL_OPEN_ON_UNAVAILABLE", "").strip().lower()
     if env_val in ("1", "true", "yes"):
         return True
     if env_val in ("0", "false", "no"):
         return False
-    return bool(_get_config_value(config, "fail_open_on_unavailable", default=False))
+    return bool(_get_config_value(config, "fail_open_on_unavailable", default=True))
 
 
 def resolve_allow_detect_on_validate(config: Optional[dict[str, Any]]) -> bool:
@@ -219,7 +242,11 @@ def resolve_allow_detect_on_validate(config: Optional[dict[str, Any]]) -> bool:
 
 
 def _credentials_cache_key(client_id: str, client_secret: str, auth_base: str) -> str:
-    return f"{auth_base}:{client_id}:{client_secret}"
+    # Hash the credential portion so the plaintext client_secret is never held in a
+    # long-lived in-memory key (avoids exposure via heap/core dumps). auth_base is not
+    # secret and is kept readable. The digest still uniquely keys distinct credentials.
+    digest = hashlib.sha256(f"{client_id}:{client_secret}".encode()).hexdigest()
+    return f"{auth_base}:{digest}"
 
 
 def _invalidate_token_cache() -> None:
