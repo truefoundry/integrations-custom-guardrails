@@ -116,12 +116,24 @@ Block messages look like: `Lasso guardrail blocked: {deputy}/{finding_name} ({se
 |---|---|---|
 | Deploy env / TFY secret | `LASSO_API_KEY` | Default API key for all calls |
 | Deploy env | `LASSO_API_BASE` | Override API base (default `https://server.lasso.security/gateway/v3`) |
+| Deploy env | `LASSO_AGENT_ID`, `LASSO_AGENT_NAME` | Service-wide default agent attribution |
 | Dashboard Config JSON | `credentials.apiKey` | Per-config API key override |
 | Dashboard Config JSON | `api_base`, `timeout`, `sessionId`, `userId`, `conversationId` | Optional per-request overrides |
+| Dashboard Config JSON | `agentId`, `agentName` | Per-config agent attribution |
 | Gateway context | `context.metadata.session_id` / `sessionId` / `lasso-conversation-id` | Session continuity for Lasso |
+| Gateway context | `context.metadata.agent_id` / `agentId` / `lasso-agent-id` (and `_name` / `Name` variants) | Per-request agent attribution |
 | Gateway context | `context.user.subjectSlug` / `subjectId` | Maps to Lasso `userId` |
 
 Wrapper bearer auth (`WRAPPER_API_KEY`) is independent of the Lasso API key.
+
+### Agent identity
+
+`agentId` / `agentName` are optional Lasso body fields identifying the agent behind an inference. Both are attribution-only; Lasso never changes a verdict on them. `_invoke_lasso` resolves each one independently and omits it from the payload when no source supplies a usable value.
+
+Two constraints shape the implementation:
+
+- **Sanitize, don't forward.** Lasso rejects the *entire* classify/classifix request with HTTP 400 when a value is blank, exceeds 128 characters, or contains a Unicode control/format character (`Cc` / `Cf`). With `Fail on error: false` that 400 is swallowed and the call is not scanned at all — one bad identity string would silently disable the rail. So `_sanitize_agent_identity` trims and validates, and an unusable value is dropped while the scan proceeds.
+- **No raw client headers.** The gateway calls the wrapper with its own request; per [`../../docs/gateway-contract.md`](../../docs/gateway-contract.md) the only inbound header is `Authorization: Bearer`. Caller-supplied `lasso-agent-id` / `lasso-agent-name` HTTP headers therefore cannot reach the wrapper in this archetype. `context.metadata` is the per-request channel instead, and it accepts those names as keys.
 
 ## Repo layout
 
