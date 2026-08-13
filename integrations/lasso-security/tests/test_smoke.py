@@ -261,16 +261,27 @@ def test_agent_identity_metadata_overrides_env(
     assert sent["agentName"] == "Req Bot"
 
 
-def test_agent_identity_config_overrides_metadata(
+def test_agent_identity_metadata_overrides_config(
     client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Config JSON is the most specific source, matching sessionId / userId resolution."""
+    """Per-request metadata is the most specific source and beats Config JSON."""
     sent = _mock_lasso_capture(monkeypatch, _CLEAN)
     body = {
         "requestBody": {"messages": [{"role": "user", "content": "hi"}]},
         "context": {**CTX, "metadata": {"agent_id": "meta-agent"}},
         "config": {"agentId": "config-agent"},
     }
+    client.post("/lasso-classify", json=body, headers=auth)
+    assert sent["agentId"] == "meta-agent"
+
+
+def test_agent_identity_config_overrides_env(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Middle rung: with no per-request metadata, Config JSON beats the deploy env."""
+    monkeypatch.setenv("LASSO_AGENT_ID", "env-agent")
+    sent = _mock_lasso_capture(monkeypatch, _CLEAN)
+    body = {**_PROMPT_BODY, "config": {"agentId": "config-agent"}}
     client.post("/lasso-classify", json=body, headers=auth)
     assert sent["agentId"] == "config-agent"
 
@@ -309,6 +320,22 @@ def test_invalid_agent_id_dropped(
     data = client.post("/lasso-classify", json=body, headers=auth).json()
     assert data["verdict"] is True, reason
     assert "agentId" not in sent
+
+
+def test_invalid_metadata_falls_back_to_config(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolution takes the first *usable* candidate. An unusable per-request
+    value falls through to the next source rather than dropping identity
+    altogether — the same as if metadata had not carried the key at all."""
+    sent = _mock_lasso_capture(monkeypatch, _CLEAN)
+    body = {
+        "requestBody": {"messages": [{"role": "user", "content": "hi"}]},
+        "context": {**CTX, "metadata": {"agent_id": "a" * 129}},
+        "config": {"agentId": "config-agent"},
+    }
+    client.post("/lasso-classify", json=body, headers=auth)
+    assert sent["agentId"] == "config-agent"
 
 
 def test_agent_identity_sent_on_mutate_output_rail(

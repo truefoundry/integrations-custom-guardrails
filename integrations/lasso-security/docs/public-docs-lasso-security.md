@@ -123,7 +123,7 @@ Override for a single guardrail config with the Config JSON field:
 {"agentId": "support-bot-prod", "agentName": "Support Bot"}
 ```
 
-Override per request by setting `agent_id` / `agent_name` (or `lasso-agent-id` / `lasso-agent-name`) in the gateway's request metadata. Config JSON wins over metadata, and metadata wins over the deploy env.
+Override per request by setting `agent_id` / `agent_name` (or `lasso-agent-id` / `lasso-agent-name`) in the gateway's request metadata. Per-request metadata wins over the Config JSON value, which wins over the deploy env — most specific source first.
 
 Keep each value under 128 characters with no control characters — Lasso rejects the call otherwise. The wrapper trims values and drops an invalid one rather than losing the scan, so a missing `agentId` in the Lasso console usually means the value was malformed.
 

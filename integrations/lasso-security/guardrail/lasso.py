@@ -206,10 +206,16 @@ def _resolve_agent_identity(
     metadata_keys: tuple[str, ...],
     env_var: str,
 ) -> Optional[str]:
-    """First usable identity from Config JSON, then gateway metadata, then deploy env."""
-    candidates: list[Any] = [_get_config_value(request.config, config_key)]
+    """First usable identity from gateway metadata, then Config JSON, then deploy env.
+
+    Per-request beats operator-static: a caller that names its agent on the
+    request must win over a default configured on the guardrail or the service.
+    Note this is deliberately the reverse of _resolve_session_id /
+    _resolve_user_id, which read config first — see docs/DESIGN.md.
+    """
     metadata = request.context.metadata or {}
-    candidates.extend(metadata.get(key) for key in metadata_keys)
+    candidates: list[Any] = [metadata.get(key) for key in metadata_keys]
+    candidates.append(_get_config_value(request.config, config_key))
     candidates.append(os.getenv(env_var))
 
     for candidate in candidates:

@@ -130,7 +130,11 @@ Wrapper bearer auth (`WRAPPER_API_KEY`) is independent of the Lasso API key.
 
 `agentId` / `agentName` are optional Lasso body fields identifying the agent behind an inference. Both are attribution-only; Lasso never changes a verdict on them. `_invoke_lasso` resolves each one independently and omits it from the payload when no source supplies a usable value.
 
-Two constraints shape the implementation:
+Resolution order is **`context.metadata` -> Config JSON -> deploy env**, most specific first: a caller that names its agent on the request must win over a default configured on the guardrail or baked into the service.
+
+That is deliberately the **reverse** of `_resolve_session_id` / `_resolve_user_id` in the same module, which read `config` before the gateway context. The inconsistency is intentional and was weighed: Lasso's other gateway integrations (Kong, Envoy, Azure APIM) all resolve the per-request header ahead of static plugin/named-value config, and their published docs state it that way, so matching the local idiom here would have made agent identity behave differently on TrueFoundry than everywhere else Lasso ships. Session and user identity are left as they are rather than changed in this PR.
+
+Two further constraints shape the implementation:
 
 - **Sanitize, don't forward.** Lasso rejects the *entire* classify/classifix request with HTTP 400 when a value is blank, exceeds 128 characters, or contains a Unicode control/format character (`Cc` / `Cf`). With `Fail on error: false` that 400 is swallowed and the call is not scanned at all — one bad identity string would silently disable the rail. So `_sanitize_agent_identity` trims and validates, and an unusable value is dropped while the scan proceeds.
 - **No raw client headers.** The gateway calls the wrapper with its own request; per [`../../docs/gateway-contract.md`](../../docs/gateway-contract.md) the only inbound header is `Authorization: Bearer`. Caller-supplied `lasso-agent-id` / `lasso-agent-name` HTTP headers therefore cannot reach the wrapper in this archetype. `context.metadata` is the per-request channel instead, and it accepts those names as keys.
