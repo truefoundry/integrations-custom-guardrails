@@ -22,6 +22,11 @@ import httpx
 
 DEFAULT_API_BASE = "https://ai-guard.onyx.security"
 DEFAULT_TIMEOUT = 10.0
+_KNOWN_ACTIONS = frozenset({"allow", "block", "modify"})
+
+
+class OnyxClientError(Exception):
+    """Onyx call failed. Message must never include the evaluate URL (policy token)."""
 
 
 @dataclass
@@ -56,22 +61,45 @@ async def evaluate(
 ) -> OnyxEvaluation:
     """POST extracted text to Onyx /simple and return the normalized verdict.
 
-    Raises httpx.HTTPError on network errors or non-2xx responses from Onyx. The
-    rail handler converts those into a wrapper 5xx so the gateway's `Fail on error`
+    Raises OnyxClientError on network errors, non-2xx responses, or HTTP 200
+    bodies without a usable ``action`` in {allow, block, modify}. The rail
+    handler converts those into a wrapper 5xx so the gateway's `Fail on error`
     policy — not this wrapper — decides pass vs block on an outage.
+
+    Never re-raise raw httpx errors: HTTPStatusError embeds the request URL, and
+    the URL path contains the policy token.
     """
     url = f"{api_base.rstrip('/')}/guard/evaluate/v1/{api_key}/simple"
     body = {"user_prompt": text} if direction == "input" else {"response": text}
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5.0)) as client:
-        resp = await client.post(
-            url,
-            json=body,
-            headers={"Content-Type": "application/json"},
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5.0)) as client:
+            resp = await client.post(
+                url,
+                json=body,
+                headers={"Content-Type": "application/json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as e:
+        # Do not chain: __cause__ would still carry the URL with the policy token.
+        raise OnyxClientError(f"Onyx returned HTTP {e.response.status_code}") from None
+    except httpx.RequestError:
+        raise OnyxClientError("Onyx request failed") from None
+    except ValueError as e:
+        # resp.json() decode failure — no URL in the message, safe to surface type.
+        raise OnyxClientError(f"Onyx response was not valid JSON: {e}") from None
 
-    action = str(data.get("action") or "allow").strip().lower()
+    if not isinstance(data, dict):
+        raise OnyxClientError("Onyx response was not a JSON object")
+
+    raw_action = data.get("action")
+    if raw_action is None or (isinstance(raw_action, str) and not raw_action.strip()):
+        # Do not default to allow — that would skip policy on unexpected payloads.
+        raise OnyxClientError("Onyx response missing action")
+    action = str(raw_action).strip().lower()
+    if action not in _KNOWN_ACTIONS:
+        raise OnyxClientError(f"Onyx returned unrecognized action: {action}")
+
     popup = data.get("custom_popup_message")
     return OnyxEvaluation(
         action=action,

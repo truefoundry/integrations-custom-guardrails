@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from entities import InputGuardrailRequest, ValidateGuardrailResponse
 from guardrail._helpers import last_user_text
 from guardrail._onyx_client import (
+    OnyxClientError,
     evaluate,
     format_block_message,
     is_allow,
@@ -39,9 +40,14 @@ async def onyx_input(request: InputGuardrailRequest) -> ValidateGuardrailRespons
             direction="input",
             timeout=timeout,
         )
-    except Exception as e:
+    except OnyxClientError as e:
         # Real outage/error -> 5xx so the dashboard's `Fail on error` policy decides.
+        # OnyxClientError messages are URL-safe (no policy token).
         raise HTTPException(status_code=502, detail=f"Onyx AI Guard call failed: {e}")
+    except Exception:
+        # Unexpected failures must not interpolate raw exception text — httpx (and
+        # similar) can embed the evaluate URL, which contains ONYX_API_KEY.
+        raise HTTPException(status_code=502, detail="Onyx AI Guard call failed")
 
     if is_allow(result.action):
         return ValidateGuardrailResponse(verdict=True)

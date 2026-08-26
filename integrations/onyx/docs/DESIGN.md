@@ -79,6 +79,7 @@ Onyx is SaaS-only with a structured HTTP API — a strong fit for the custom-gua
    - `allow` → `ValidateGuardrailResponse(verdict=True)`
    - `block` → `verdict=False`, message from `custom_popup_message`
    - `modify` → same as block (fail-safe; see known limitation)
+   - missing / empty / unrecognized `action` → HTTP 502 (do not default to allow)
 5. Network / non-2xx from Onyx → HTTP 502 so the dashboard's `Fail on error` policy decides.
 
 ### Output (`POST /onyx-output`)
@@ -99,6 +100,7 @@ Whether output blocking actually fires depends on the Onyx **policy** having an 
 | `action: allow` | `200 {"verdict": true}` |
 | `action: block` | `200 {"verdict": false, "message": "Onyx AI Guard (input\|output): <custom_popup_message>"}` |
 | `action: modify` | Same as block (fail-safe on Validate rails) |
+| Missing / empty / unrecognized `action` | `502` — real error (do not default to allow) |
 | Missing / invalid `ONYX_API_KEY` | `500` — real error |
 | Onyx HTTP error / timeout / network | `502` — real error |
 
@@ -171,12 +173,15 @@ Per-rail files (not a single `guardrail/onyx.py`) match `_template/` and NeMo / 
 |---|---|---|
 | 401 from wrapper | Bearer token mismatch | Sync `WRAPPER_API_KEY` secret, pod env, dashboard Custom Bearer Auth |
 | 500 "Onyx API key not configured" | Missing `ONYX_API_KEY` secret and no `config.credentials.apiKey` | Create secret; redeploy; or set Config JSON |
-| 502 "Onyx AI Guard call failed" | Onyx outage, bad token, wrong base URL, timeout | Check Onyx status / `ONYX_API_BASE` / token; raise `ONYX_TIMEOUT`; `Fail on error` decides pass vs block |
+| 502 "Onyx AI Guard call failed" | Onyx outage, bad token, wrong base URL, timeout, or 200 body without usable `action` | Check Onyx status / `ONYX_API_BASE` / token; raise `ONYX_TIMEOUT`; `Fail on error` decides pass vs block |
 | Input blocks but output allows the same phrase | Policy has Input rule only | Expected until an Output-direction rule is added in Onyx |
 | `modify` content still blocked | Validate rails fail-safe | Expected — need a Mutate rail to apply `modified_prompt` / `modified_response` |
 | Stale code after redeploy | TFY image cache | `curl /debug/loaded-config` and check `wrapper_version` |
 
-Do not log the evaluate URL — it contains the policy token.
+Do not log the evaluate URL — it contains the policy token. `evaluate()` catches
+httpx errors and raises `OnyxClientError` with a URL-free message (and without
+chaining the raw httpx exception); rail handlers must never put raw exception
+text into 502 bodies.
 
 ## Future work
 

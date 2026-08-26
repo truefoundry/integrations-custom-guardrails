@@ -132,6 +132,98 @@ def test_debug_loaded_config_lists_routes(client: TestClient, auth: dict[str, st
     assert "onyx_api_key_configured" in body
 
 
+def test_onyx_http_error_502_does_not_leak_api_key(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: httpx.HTTPStatusError embeds the request URL (policy token in path).
+
+    Wrapper 502 bodies must not echo that URL / token to the gateway or logs.
+    """
+    import httpx
+
+    secret = "leak-me-onyx-policy-token"
+    monkeypatch.setenv("ONYX_API_KEY", secret)
+
+    real_async_client = httpx.AsyncClient
+
+    class _FakeResponse:
+        status_code = 401
+
+        def raise_for_status(self) -> None:
+            req = httpx.Request(
+                "POST",
+                f"https://ai-guard.onyx.security/guard/evaluate/v1/{secret}/simple",
+            )
+            raise httpx.HTTPStatusError(
+                f"Client error '401 Unauthorized' for url "
+                f"'https://ai-guard.onyx.security/guard/evaluate/v1/{secret}/simple'",
+                request=req,
+                response=httpx.Response(401, request=req),
+            )
+
+        def json(self) -> dict:
+            return {}
+
+    class _FakeAsyncClient(real_async_client):
+        async def post(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    r = client.post("/onyx-input", headers=auth, json=_input_body("hi"))
+    assert r.status_code == 502, r.text
+    assert secret not in r.text
+    assert "/guard/evaluate/" not in r.text
+    assert "Onyx returned HTTP 401" in r.text
+
+
+@pytest.mark.parametrize(
+    "onyx_body,detail_substr",
+    [
+        ({}, "missing action"),
+        ({"action": None}, "missing action"),
+        ({"action": ""}, "missing action"),
+        ({"action": "   "}, "missing action"),
+        ({"action": "warn"}, "unrecognized action"),
+    ],
+)
+def test_onyx_200_without_usable_action_returns_502(
+    client: TestClient,
+    auth: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    onyx_body: dict,
+    detail_substr: str,
+) -> None:
+    """HTTP 200 without allow|block|modify must be a 5xx, not verdict:true.
+
+    Regression: evaluate() used to substitute action=allow on missing/empty
+    action, which skipped policy instead of surfacing Fail-on-error.
+    """
+    import httpx
+
+    monkeypatch.setenv("ONYX_API_KEY", "test-policy-token")
+
+    class _FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return onyx_body
+
+    class _FakeAsyncClient(httpx.AsyncClient):
+        async def post(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    r = client.post("/onyx-input", headers=auth, json=_input_body("hi"))
+    assert r.status_code == 502, r.text
+    assert detail_substr in r.text
+    assert r.json().get("verdict") is None
+
+
 # ---------------------------------------------------------------------------
 # Rail verdicts (require a live Onyx AI Guard /simple call)
 # ---------------------------------------------------------------------------
