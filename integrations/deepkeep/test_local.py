@@ -38,6 +38,55 @@ PII_RESPONSE = {
     ],
 }
 
+# DeepKeep's PII Detector commonly returns ``replace`` (see firewall config
+# comments in main.py). Must mutate the same way as redact/modify.
+PII_REPLACE_RESPONSE = {
+    "flagged": True,
+    "risk_level": "medium",
+    "request_id": "req-pii-replace-1",
+    "verbosity": [
+        {
+            "guardrail_name": "PII Detector",
+            "details": {
+                "guardrail_action": "replace",
+                "modified": [
+                    {
+                        "role": "user",
+                        "content": "My SSN is *****-**** and email is [EMAIL]",
+                    }
+                ],
+            },
+        }
+    ],
+}
+
+# Mutate action wins but DeepKeep forgot to attach replacement text — must deny,
+# never soft-pass the original PII/policy-flagged content.
+PII_REPLACE_NO_MODIFIED = {
+    "flagged": True,
+    "risk_level": "medium",
+    "request_id": "req-pii-empty-1",
+    "verbosity": [
+        {
+            "guardrail_name": "PII Detector",
+            "details": {"guardrail_action": "replace", "modified": []},
+        }
+    ],
+}
+
+# Unrecognized winning action on a flagged result — deny, do not pass-through.
+UNKNOWN_ACTION_RESPONSE = {
+    "flagged": True,
+    "risk_level": "high",
+    "request_id": "req-unknown-1",
+    "verbosity": [
+        {
+            "guardrail_name": "Custom Policy",
+            "details": {"guardrail_action": "quarantine", "modified": []},
+        }
+    ],
+}
+
 ADVERSARIAL_RESPONSE = {
     "flagged": True,
     "risk_level": "high",
@@ -87,9 +136,9 @@ MIXED_RESPONSE = {
     "request_id": "req-mixed-1",
     "verbosity": [
         {
-            "guardrail_name": "PII",
+            "guardrail_name": "PII Detector",
             "details": {
-                "guardrail_action": "redact",
+                "guardrail_action": "replace",
                 "modified": [{"role": "user", "content": "redacted text"}],
             },
         },
@@ -217,6 +266,107 @@ def main_test() -> None:
         and parsed["result"]["messages"][0]["content"]
         == "My SSN is [REDACTED] and email is [REDACTED]",
     )
+
+    resp, parsed = run_case(
+        client, "1b. PII Detector replace -> mutate (not pass-through)",
+        PII_REPLACE_RESPONSE,
+        input_body("My SSN is 123-45-6789 and email is jane.doe@example.com"),
+        headers=auth_headers,
+    )
+    check("HTTP 200 replace", resp.status_code == 200)
+    check("verdict=true replace", parsed.get("verdict") is True)
+    check("transformed=true replace", parsed.get("transformed") is True)
+    check(
+        "result.messages content uses DeepKeep replace payload",
+        isinstance(parsed.get("result"), dict)
+        and parsed["result"]["messages"][0]["content"]
+        == "My SSN is *****-**** and email is [EMAIL]",
+    )
+
+    resp, parsed = run_case(
+        client, "1c. replace without modified text -> deny (not pass-through)",
+        PII_REPLACE_NO_MODIFIED,
+        input_body("My SSN is 123-45-6789"),
+        headers=auth_headers,
+    )
+    check("HTTP 200 empty-replace deny", resp.status_code == 200)
+    check("verdict=false empty-replace", parsed.get("verdict") is False)
+    check("transformed=false empty-replace", parsed.get("transformed") is False)
+    check(
+        "guardrail_name for empty replace",
+        parsed.get("guardrail_name") == "PII Detector",
+    )
+    check(
+        "original PII not echoed as result pass-through",
+        not (
+            isinstance(parsed.get("result"), dict)
+            and parsed["result"].get("messages", [{}])[0].get("content")
+            == "My SSN is 123-45-6789"
+            and parsed.get("verdict") is True
+        ),
+    )
+
+    resp, parsed = run_case(
+        client, "1d. unrecognized winning action -> deny (not pass-through)",
+        UNKNOWN_ACTION_RESPONSE,
+        input_body("flagged by custom policy"),
+        headers=auth_headers,
+    )
+    check("HTTP 200 unknown-action deny", resp.status_code == 200)
+    check("verdict=false unknown-action", parsed.get("verdict") is False)
+    check(
+        "guardrail_name for unknown action",
+        parsed.get("guardrail_name") == "Custom Policy",
+    )
+
+    resp, parsed = run_case(
+        client, "1e. Output replace -> mutate",
+        PII_REPLACE_RESPONSE,
+        {
+            "responseBody": {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "his SSN is 123-45-6789",
+                        }
+                    }
+                ]
+            }
+        },
+        endpoint="/guardrails/output",
+        headers=auth_headers,
+    )
+    check("HTTP 200 output replace", resp.status_code == 200)
+    check("verdict=true output replace", parsed.get("verdict") is True)
+    check("transformed=true output replace", parsed.get("transformed") is True)
+    check(
+        "output result uses replace payload",
+        isinstance(parsed.get("result"), dict)
+        and parsed["result"]["choices"][0]["message"]["content"]
+        == "My SSN is *****-**** and email is [EMAIL]",
+    )
+
+    resp, parsed = run_case(
+        client, "1f. Output replace without modified -> deny",
+        PII_REPLACE_NO_MODIFIED,
+        {
+            "responseBody": {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "SSN 123-45-6789",
+                        }
+                    }
+                ]
+            }
+        },
+        endpoint="/guardrails/output",
+        headers=auth_headers,
+    )
+    check("HTTP 200 output empty-replace deny", resp.status_code == 200)
+    check("verdict=false output empty-replace", parsed.get("verdict") is False)
 
     resp, parsed = run_case(
         client, "2. Adversarial Prompt Defense -> deny", ADVERSARIAL_RESPONSE,

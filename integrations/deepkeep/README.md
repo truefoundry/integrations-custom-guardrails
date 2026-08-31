@@ -12,7 +12,7 @@ the same schema, so this wrapper translates between them:
 |---|---|---|
 | Input check | `InputGuardrailRequest` (`requestBody`, OpenAI chat shape) | `POST /api/v3/openai/moderations/pre` → `{"model": "<firewall_id>", "input": "..."}` |
 | Output check | `OutputGuardrailRequest` (`requestBody` + `responseBody`) | `POST /api/v3/openai/moderations/post` → `{"model": "<firewall_id>", "output": "..."}` |
-| Verdict | `null`=pass, modified body=mutate, `4xx`=block | `ApplyGuardrailResponse.flagged` + `verbosity[].details.guardrail_action` (`allow`/`alert`/`redact`/`modify`/`block`) |
+| Verdict | `null`=pass, modified body=mutate, `4xx`=block | `ApplyGuardrailResponse.flagged` + `verbosity[].details.guardrail_action` (`allow`/`alert`/`redact`/`modify`/`replace`/`block`) |
 
 ## 1. Configure DeepKeep
 
@@ -71,8 +71,11 @@ curl -X POST "https://<gateway-host>/api/gateway/chat/completions" \
 ```
 
 Expected: the wrapper calls DeepKeep's `/moderations/pre`, DeepKeep flags PII
-with `guardrail_action: redact`, the wrapper returns the redacted message
-body, and the gateway forwards the **redacted** prompt to the upstream LLM.
+with `guardrail_action: replace` (or `redact` / `modify`), the wrapper returns
+the masked message body, and the gateway forwards the **redacted** prompt to
+the upstream LLM. If a mutate action wins but DeepKeep omits usable
+`modified` text, or returns an unrecognized action, the wrapper **denies**
+rather than pass-throughing the original (unredacted) content.
 
 ## Notes / things to double check with DeepKeep before going to production
 

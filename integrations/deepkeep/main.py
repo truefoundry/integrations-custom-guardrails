@@ -8,7 +8,7 @@ DeepKeep's ApplyGuardrailResponse onto the gateway Mutate contract
 
   HTTP 2xx + {verdict, transformed, result}  — policy completed
     verdict=true,  transformed=false  → pass-through
-    verdict=true,  transformed=true   → mutate (PII redact/modify)
+    verdict=true,  transformed=true   → mutate (PII redact/modify/replace)
     verdict=false                     → deny (jailbreak / toxic / secrets block)
   HTTP 5xx                               — DeepKeep / wrapper infrastructure failure
 
@@ -29,6 +29,7 @@ import asyncio
 import copy
 import logging
 import os
+from collections.abc import Callable
 from typing import Any, Literal
 
 import httpx
@@ -105,6 +106,13 @@ client = httpx.AsyncClient(
 # DeepKeep: first-listed fired guardrail in verbosity wins (firewall config order).
 # Current Pre order: Credentials Leakage: Secret Key [block]
 #   → PII Detector [replace] → Adversarial Prompt Defense [block] → Toxic Language [block]
+#
+# Actions that rewrite content (PII masking etc.). DeepKeep's PII Detector
+# commonly returns ``replace``; older docs also use ``redact`` / ``modify``.
+MUTATE_ACTIONS = frozenset({"redact", "modify", "replace"})
+# Explicit deny. Anything else that is not allow/alert/mutate is treated as
+# deny so flagged content never pass-throughs unchanged.
+DENY_ACTIONS = frozenset({"block"})
 
 
 # ---------------------------------------------------------------------------
@@ -249,18 +257,25 @@ def _winning_action_and_name(
 def _modified_text_for_winner(
     verbosity: list[dict[str, Any]], action: str
 ) -> str | None:
-    """If the winning action is redact/modify, take that rail's modified content."""
-    if action not in ("redact", "modify"):
+    """If the winning action mutates text, return that rail's modified content.
+
+    Handles DeepKeep's ``redact`` / ``modify`` / ``replace`` actions. Only the
+    first-listed non-allow rail (the winner) is considered.
+    """
+    if action not in MUTATE_ACTIONS:
         return None
     for v in verbosity:
         details = v.get("details", {})
         rail_action = details.get("guardrail_action", "allow")
         if rail_action in ("allow", "", None):
             continue
-        if rail_action in ("redact", "modify"):
+        # Winner is the first non-allow entry; only use its modified payload.
+        if rail_action in MUTATE_ACTIONS:
             modified = details.get("modified") or []
             if modified:
-                return modified[-1].get("content")
+                content = modified[-1].get("content")
+                if isinstance(content, str):
+                    return content
         return None
     return None
 
@@ -349,10 +364,13 @@ def _decide_verdict(
     dk_result: dict[str, Any], direction: str
 ) -> tuple[str, str | None]:
     """
-    Classify DeepKeep result into allow | redact | modify | block.
+    Classify DeepKeep result into allow | mutate-action | block | unknown.
 
-    Returns (action, blocker_name). action is "allow" for pass-through
-    (flagged=false or worst is allow/alert).
+    Returns (action, guardrail_name). ``allow`` means pass-through
+    (flagged=false or winning action is allow/alert). Mutate actions are
+    returned as-is (``redact`` / ``modify`` / ``replace``). ``block`` and any
+    other unrecognized action must be enforced as deny by the caller — never
+    soft-pass flagged content.
     """
     verbosity = dk_result.get("verbosity") or []
     _log_verbosity_actions(verbosity, direction)
@@ -370,6 +388,63 @@ def _decide_verdict(
 
     logger.info("[%s] winning_action=%r name=%r", direction, action, name)
     return action, name
+
+
+def _apply_decision(
+    *,
+    direction: str,
+    body: dict[str, Any],
+    dk_result: dict[str, Any],
+    action: str,
+    blocker: str | None,
+    apply_modified: Callable[[str], dict[str, Any] | None],
+) -> JSONResponse:
+    """Map a decided action onto allow / mutate / deny for the gateway.
+
+    ``apply_modified(modified_text)`` returns the mutated body when the
+    winning rail supplied usable replacement text.
+    """
+    if action == "allow":
+        return _passthrough(body)
+
+    if action in DENY_ACTIONS or action not in MUTATE_ACTIONS:
+        if action not in DENY_ACTIONS:
+            logger.warning(
+                "[%s] unrecognized winning_action=%r name=%r → deny "
+                "(never pass-through flagged content)",
+                direction,
+                action,
+                blocker,
+            )
+        return _deny_response(body, dk_result, blocker)
+
+    modified_text = _modified_text_for_winner(
+        dk_result.get("verbosity") or [], action
+    )
+    if modified_text is not None:
+        mutated = apply_modified(modified_text)
+        if mutated is not None:
+            logger.info(
+                "[%s] mutating with %s text", direction, action
+            )
+            return _mutate_response(
+                verdict=True,
+                transformed=True,
+                result=mutated,
+                extra={
+                    "request_id": dk_result.get("request_id", ""),
+                    "risk_level": dk_result.get("risk_level", ""),
+                },
+            )
+
+    # Flagged mutate action but DeepKeep gave no usable replacement — deny
+    # rather than forwarding the original (unredacted) text.
+    logger.warning(
+        "[%s] %s without usable modified text → deny (refuse unredacted pass-through)",
+        direction,
+        action,
+    )
+    return _deny_response(body, dk_result, blocker)
 
 
 # ---------------------------------------------------------------------------
@@ -399,34 +474,21 @@ async def input_guardrail(request: Request):
 
     action, blocker = _decide_verdict(dk_result, "input")
 
-    if action == "allow":
-        return _passthrough(request_body)
-
-    if action == "block":
-        return _deny_response(request_body, dk_result, blocker)
-
-    # redact / modify — splice modified content back into the original messages
-    modified_text = _modified_text_for_winner(
-        dk_result.get("verbosity") or [], action
-    )
-    if modified_text is not None and idx >= 0:
+    def _apply_modified(modified_text: str) -> dict[str, Any] | None:
+        if idx < 0:
+            return None
         messages[idx] = {**messages[idx], "content": modified_text}
         request_body["messages"] = messages
-        logger.info("[input] mutating requestBody with redacted/modified text")
-        return _mutate_response(
-            verdict=True,
-            transformed=True,
-            result=request_body,
-            extra={
-                "request_id": dk_result.get("request_id", ""),
-                "risk_level": dk_result.get("risk_level", ""),
-            },
-        )
+        return request_body
 
-    logger.warning(
-        "[input] redact/modify without usable modified text → pass-through"
+    return _apply_decision(
+        direction="input",
+        body=request_body,
+        dk_result=dk_result,
+        action=action,
+        blocker=blocker,
+        apply_modified=_apply_modified,
     )
-    return _passthrough(request_body)
 
 
 # ---------------------------------------------------------------------------
@@ -461,34 +523,20 @@ async def output_guardrail(request: Request):
 
     action, blocker = _decide_verdict(dk_result, "output")
 
-    if action == "allow":
-        return _passthrough(response_body)
-
-    if action == "block":
-        return _deny_response(response_body, dk_result, blocker)
-
-    modified_text = _modified_text_for_winner(
-        dk_result.get("verbosity") or [], action
-    )
-    if modified_text is not None:
-        message = {**message, "content": modified_text}
-        choices[0] = {**choices[0], "message": message}
+    def _apply_modified(modified_text: str) -> dict[str, Any] | None:
+        updated = {**message, "content": modified_text}
+        choices[0] = {**choices[0], "message": updated}
         response_body["choices"] = choices
-        logger.info("[output] mutating responseBody with redacted/modified text")
-        return _mutate_response(
-            verdict=True,
-            transformed=True,
-            result=response_body,
-            extra={
-                "request_id": dk_result.get("request_id", ""),
-                "risk_level": dk_result.get("risk_level", ""),
-            },
-        )
+        return response_body
 
-    logger.warning(
-        "[output] redact/modify without usable modified text → pass-through"
+    return _apply_decision(
+        direction="output",
+        body=response_body,
+        dk_result=dk_result,
+        action=action,
+        blocker=blocker,
+        apply_modified=_apply_modified,
     )
-    return _passthrough(response_body)
 
 
 @app.get("/healthz")
