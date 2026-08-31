@@ -104,16 +104,36 @@ client = httpx.AsyncClient(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _text_from_content(content: Any) -> str:
+    """Flatten message content to plain text for DeepKeep's moderation schema.
+
+    DeepKeep accepts ``string | list[string]`` on ``input`` / ``output``. OpenAI
+    multimodal list-of-parts (``[{"type": "text", "text": "..."}, ...]``) must
+    be reduced to a string — posting part objects causes a schema error, and
+    with fail-open that returns the unredacted reply.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
 def _extract_last_text(messages: list[dict[str, Any]], role: str) -> tuple[str, int]:
     """Return (text, index) of the last message with the given role."""
     for idx in range(len(messages) - 1, -1, -1):
         if messages[idx].get("role") == role:
-            content = messages[idx].get("content", "")
-            if isinstance(content, list):
-                content = "".join(
-                    part.get("text", "") for part in content if isinstance(part, dict)
-                )
-            return content, idx
+            return _text_from_content(messages[idx].get("content")), idx
     return "", -1
 
 
@@ -383,7 +403,8 @@ async def output_guardrail(request: Request):
         return _passthrough(response_body)
 
     message = dict(choices[0].get("message") or {})
-    text = message.get("content", "")
+    # Same flattening as input: never post list-of-parts objects to DeepKeep.
+    text = _text_from_content(message.get("content"))
     if not text:
         return _passthrough(response_body)
 

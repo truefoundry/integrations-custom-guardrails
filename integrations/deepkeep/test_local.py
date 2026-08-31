@@ -277,6 +277,86 @@ def main_test() -> None:
         == "My SSN is [REDACTED] and email is [REDACTED]",
     )
 
+    # Array-shaped assistant content must be flattened to a string before the
+    # DeepKeep call (schema is string | list[string], not list-of-parts objects).
+    captured = {}
+
+    async def capturing_stub(path, firewall_id, field_name, text):
+        captured["text"] = text
+        captured["field_name"] = field_name
+        return PII_RESPONSE
+
+    resp, parsed = run_case(
+        client, "7b. Output list-of-parts content -> flatten before DeepKeep",
+        PII_RESPONSE,
+        {
+            "responseBody": {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": "his SSN is 123-45-6789"},
+                                {"type": "image_url", "image_url": {"url": "data:…"}},
+                            ],
+                        }
+                    }
+                ]
+            }
+        },
+        endpoint="/guardrails/output",
+        stub=capturing_stub,
+        headers=auth_headers,
+    )
+    check("HTTP 200", resp.status_code == 200)
+    check(
+        "DeepKeep received flattened string (not part objects)",
+        captured.get("field_name") == "output"
+        and captured.get("text") == "his SSN is 123-45-6789"
+        and isinstance(captured.get("text"), str),
+    )
+    check("verdict=true", parsed.get("verdict") is True)
+    check("transformed=true", parsed.get("transformed") is True)
+    check(
+        "result.choices[0].message.content replaced after flatten",
+        isinstance(parsed.get("result"), dict)
+        and parsed["result"]["choices"][0]["message"]["content"]
+        == "My SSN is [REDACTED] and email is [REDACTED]",
+    )
+
+    # Input path: list-of-parts user content also flattens (regression).
+    captured.clear()
+
+    async def capturing_input_stub(path, firewall_id, field_name, text):
+        captured["text"] = text
+        captured["field_name"] = field_name
+        return CLEAN_RESPONSE
+
+    resp, parsed = run_case(
+        client, "7c. Input list-of-parts content -> flatten before DeepKeep",
+        CLEAN_RESPONSE,
+        {
+            "requestBody": {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "What is the capital of France?"},
+                        ],
+                    }
+                ]
+            }
+        },
+        stub=capturing_input_stub,
+        headers=auth_headers,
+    )
+    check("HTTP 200", resp.status_code == 200)
+    check(
+        "input DeepKeep received flattened string",
+        captured.get("field_name") == "input"
+        and captured.get("text") == "What is the capital of France?",
+    )
+
     resp, parsed = run_case(
         client, "8. DeepKeep unavailable -> fail open", None,
         input_body("anything"), stub=make_failing_stub(),
