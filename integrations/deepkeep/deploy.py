@@ -6,6 +6,9 @@ Ports/domains: https://www.truefoundry.com/docs/define-ports-and-domains
 
 Auth + workspace come from .env:
   TFY_HOST, TFY_API_KEY, TFY_WORKSPACE_FQN
+Required for any publicly exposed deploy (Port expose=True):
+  WRAPPER_API_KEY or WRAPPER_API_KEY_TFY_SECRET — shared bearer the gateway
+  sends as Authorization: Bearer …. Prefer a TFY secret FQN.
 Optional:
   TFY_SERVICE_HOST — public hostname for Port(expose=True). If omitted, we
   try to derive one from the workspace cluster's base domains.
@@ -23,7 +26,7 @@ from truefoundry.deploy import Build, LocalSource, Port, PythonBuild, Resources,
 from truefoundry.deploy.lib.clients.servicefoundry_client import ServiceFoundryServiceClient
 from truefoundry.deploy.lib.dao.workspace import get_workspace_by_fqn
 
-load_dotenv()
+load_dotenv(override=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("deploy")
 
@@ -143,6 +146,10 @@ def main() -> None:
     service_host = re.sub(r"^https?://", "", service_host).rstrip("/")
 
     dk_api_key = os.environ.get("DEEPKEEP_API_KEY_TFY_SECRET") or _env("DEEPKEEP_API_KEY")
+    # Prefer a TFY secret FQN so the raw bearer never lands in the deploy manifest.
+    wrapper_api_key = (
+        os.environ.get("WRAPPER_API_KEY_TFY_SECRET") or _env("WRAPPER_API_KEY")
+    )
     dk_base_url = _env("DEEPKEEP_BASE_URL", "https://api.poc2.aws.deepkeep.ai")
     input_fw = _env("DEEPKEEP_INPUT_FIREWALL_ID")
     output_fw = os.environ.get("DEEPKEEP_OUTPUT_FIREWALL_ID") or input_fw
@@ -171,6 +178,9 @@ def main() -> None:
             "DEEPKEEP_API_KEY": dk_api_key,
             "DEEPKEEP_INPUT_FIREWALL_ID": input_fw,
             "DEEPKEEP_OUTPUT_FIREWALL_ID": output_fw,
+            # Required: service is published with expose=True; without this the
+            # guardrail/diagnose routes would be reachable without auth.
+            "WRAPPER_API_KEY": wrapper_api_key,
         },
         ports=[
             Port(

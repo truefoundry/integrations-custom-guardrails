@@ -21,6 +21,8 @@ DeepKeep endpoints:
   POST /api/v3/openai/moderations/post  (output firewall)
 
 Auth to DeepKeep: X-API-Key header.
+Auth to this wrapper: Authorization: Bearer $WRAPPER_API_KEY (required when
+deployed with Port expose=True; optional for local development only).
 """
 
 import asyncio
@@ -31,7 +33,7 @@ from typing import Any, Literal
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 load_dotenv()
@@ -41,8 +43,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
 logger = logging.getLogger("deepkeep-guardrail-wrapper")
-
-app = FastAPI(title="DeepKeep Guardrail Wrapper")
 
 # ---------------------------------------------------------------------------
 # Config — set these via env vars when deploying the wrapper
@@ -55,6 +55,26 @@ DEEPKEEP_INPUT_FIREWALL_ID = os.environ["DEEPKEEP_INPUT_FIREWALL_ID"]
 DEEPKEEP_OUTPUT_FIREWALL_ID = (
     os.environ.get("DEEPKEEP_OUTPUT_FIREWALL_ID") or DEEPKEEP_INPUT_FIREWALL_ID
 )
+
+# Shared bearer token for gateway → wrapper auth. Configure the same value in
+# the TrueFoundry dashboard under Custom Bearer Auth. When unset, auth is
+# disabled (local development only) — deploy.py must inject WRAPPER_API_KEY
+# for any publicly exposed deployment.
+WRAPPER_API_KEY = os.environ.get("WRAPPER_API_KEY", "").strip()
+
+
+def require_bearer(request: Request) -> None:
+    """Bearer-auth dependency. No key configured -> auth disabled (local dev only)."""
+    if not WRAPPER_API_KEY:
+        return
+    header = request.headers.get("authorization", "")
+    if not header.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    if header.split(" ", 1)[1].strip() != WRAPPER_API_KEY:
+        raise HTTPException(status_code=401, detail="invalid bearer token")
+
+
+app = FastAPI(title="DeepKeep Guardrail Wrapper")
 
 DEEPKEEP_TIMEOUT_SECONDS = float(os.environ.get("DEEPKEEP_TIMEOUT_SECONDS", "10"))
 
@@ -298,7 +318,7 @@ def _decide_verdict(
 # ---------------------------------------------------------------------------
 # Input guardrail (pre-moderation) — called on Target: Request
 # ---------------------------------------------------------------------------
-@app.post("/guardrails/input")
+@app.post("/guardrails/input", dependencies=[Depends(require_bearer)])
 async def input_guardrail(request: Request):
     body = await request.json()
     request_body = copy.deepcopy(body.get("requestBody") or {})
@@ -353,7 +373,7 @@ async def input_guardrail(request: Request):
 # ---------------------------------------------------------------------------
 # Output guardrail (post-moderation) — called on Target: Response
 # ---------------------------------------------------------------------------
-@app.post("/guardrails/output")
+@app.post("/guardrails/output", dependencies=[Depends(require_bearer)])
 async def output_guardrail(request: Request):
     body = await request.json()
     response_body = copy.deepcopy(body.get("responseBody") or {})
@@ -414,7 +434,7 @@ async def healthz():
     return {"status": "ok"}
 
 
-@app.get("/diagnose")
+@app.get("/diagnose", dependencies=[Depends(require_bearer)])
 async def diagnose():
     """
     Probe DeepKeep connectivity and classify the failure.

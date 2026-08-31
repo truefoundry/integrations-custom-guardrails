@@ -30,17 +30,20 @@ export DEEPKEEP_BASE_URL="https://api.poc2.aws.deepkeep.ai"   # your DeepKeep AP
 export DEEPKEEP_API_KEY="<your-deepkeep-token>"
 export DEEPKEEP_INPUT_FIREWALL_ID="<firewall_id_for_input_checks>"
 export DEEPKEEP_OUTPUT_FIREWALL_ID="<firewall_id_for_output_checks>"  # optional, defaults to input firewall
+export WRAPPER_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 
 uvicorn main:app --host 0.0.0.0 --port 8080
 ```
 
-Deploy this wherever the gateway can reach it (same VPC, or public HTTPS with
-auth in front — see step 3).
+Deploy this wherever the gateway can reach it (same VPC, or public HTTPS).
+`WRAPPER_API_KEY` gates `/guardrails/*` and `/diagnose`; leave it unset only for
+local development (auth disabled). `/healthz` stays open for probes.
 
 Endpoints exposed:
-- `POST /guardrails/input` — wire to the gateway's **Request**-target guardrail
-- `POST /guardrails/output` — wire to the gateway's **Response**-target guardrail
-- `GET /healthz`
+- `POST /guardrails/input` — wire to the gateway's **Request**-target guardrail (bearer required)
+- `POST /guardrails/output` — wire to the gateway's **Response**-target guardrail (bearer required)
+- `GET /diagnose` — DeepKeep connectivity probe (bearer required)
+- `GET /healthz` — health check (open)
 
 ## 3. Wire it into the gateway dashboard
 
@@ -50,7 +53,7 @@ For the input check:
 - **Name** — `deepkeep-input-firewall`
 - **Operation** — `Mutate` (it can return a modified body)
 - **URL** — `https://<your-wrapper-host>/guardrails/input`
-- **Auth Data** — whatever auth you put in front of the wrapper (Bearer/Basic)
+- **Auth Data** — Custom Bearer Auth with the same value as `WRAPPER_API_KEY`
 - **Target** — `Request`
 - **Enforcing Strategy** — `Enforce` (recommended) or `audit` while testing
 
@@ -97,11 +100,13 @@ the AI Gateway. The gateway then calls it as an external Custom Guardrail URL.
    # or: pip install -r requirements-deploy.txt
    ```
 
-2. Create a TrueFoundry secret for `DEEPKEEP_API_KEY` under the **Secrets**
-   tab. Copy its FQN and set it in `deploy.py` as
-   `tfy-secret://<your-secret-fqn>` — never put a raw API key in `deploy.py`.
+2. Create TrueFoundry secrets under the **Secrets** tab for:
+   - `DEEPKEEP_API_KEY` — set `DEEPKEEP_API_KEY_TFY_SECRET=tfy-secret://…` in `.env`
+   - `WRAPPER_API_KEY` — set `WRAPPER_API_KEY_TFY_SECRET=tfy-secret://…` in `.env`
+     (or put the raw value in `WRAPPER_API_KEY`; prefer a secret FQN). Never put
+     a raw API key in `deploy.py`.
 
-3. Fill in the other `DEEPKEEP_*` placeholders in `deploy.py`
+3. Fill in the other `DEEPKEEP_*` placeholders in `.env`
    (`DEEPKEEP_BASE_URL`, `DEEPKEEP_INPUT_FIREWALL_ID`,
    `DEEPKEEP_OUTPUT_FIREWALL_ID`).
 
@@ -119,8 +124,7 @@ the AI Gateway. The gateway then calls it as an external Custom Guardrail URL.
    - `<endpoint>/guardrails/input`
    - `<endpoint>/guardrails/output`
 
-**Warning:** The service endpoint may be publicly reachable, and TrueFoundry
-does **not** add authentication to it automatically. Harden `main.py` with a
-shared bearer-token check on incoming requests so only the AI Gateway can call
-the wrapper (configure the same token under the gateway Custom Guardrail
-**Auth Data**).
+Configure the gateway Custom Guardrail **Auth Data** with the same bearer as
+`WRAPPER_API_KEY`. The three must match: TFY secret → pod env → dashboard
+Custom Bearer Auth field. `/healthz` remains unauthenticated for probes;
+`/guardrails/*` and `/diagnose` require the bearer.
