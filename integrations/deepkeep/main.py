@@ -86,9 +86,15 @@ DEEPKEEP_WARMUP_BACKOFF_SECONDS = float(
 )
 WARMUP_MARKERS = ("warming up", "waking from hibernate", "hibernat")
 
-# If DeepKeep is unreachable/erroring, fail open (pass traffic through) by default.
-# Set to "false" to fail closed (block traffic) instead.
+# If DeepKeep is unreachable (timeouts, 5xx, warmup), fail open (pass traffic
+# through) by default. Set to "false" to fail closed (HTTP 503) instead.
+# Misconfiguration (bad API key / firewall id → 401/403/400/404) NEVER fails
+# open: those always return HTTP 503 so the gateway does not record a passing
+# verdict for an effectively disabled rail.
 DEEPKEEP_FAIL_OPEN = os.environ.get("DEEPKEEP_FAIL_OPEN", "true").lower() != "false"
+
+# Client / auth failures from DeepKeep — config bugs, not transient outages.
+DEEPKEEP_CONFIG_ERROR_STATUSES = frozenset({400, 401, 403, 404, 422})
 
 client = httpx.AsyncClient(
     base_url=DEEPKEEP_BASE_URL,
@@ -138,7 +144,20 @@ def _extract_last_text(messages: list[dict[str, Any]], role: str) -> tuple[str, 
 
 
 class DeepKeepUnavailable(Exception):
-    """Raised when the DeepKeep firewall API cannot be reached or errors out."""
+    """Raised when the DeepKeep firewall API cannot be reached or errors out.
+
+    Covers connection failures, timeouts, 5xx, warmup exhaustion, and non-JSON
+    bodies — transient / infrastructure issues that DEEPKEEP_FAIL_OPEN may
+    soften into a pass-through.
+    """
+
+
+class DeepKeepConfigError(Exception):
+    """Raised for DeepKeep auth or request-rejection responses (bad config).
+
+    401/403 (API key) and 400/404/422 (firewall id / payload) must never fail
+    open: a misconfigured rail would otherwise silently allow all traffic.
+    """
 
 
 def _is_warming_up(resp: httpx.Response) -> bool:
@@ -175,13 +194,15 @@ async def _call_deepkeep(
             await asyncio.sleep(wait)
             continue
 
-        try:
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise DeepKeepUnavailable(
-                f"DeepKeep returned HTTP {exc.response.status_code} for {path}: "
+        status = resp.status_code
+        if status >= 400:
+            detail = (
+                f"DeepKeep returned HTTP {status} for {path}: "
                 f"{resp.text.strip()[:200]}"
-            ) from exc
+            )
+            if status in DEEPKEEP_CONFIG_ERROR_STATUSES:
+                raise DeepKeepConfigError(detail)
+            raise DeepKeepUnavailable(detail)
 
         try:
             return resp.json()
@@ -308,6 +329,22 @@ def _unavailable_response(
     )
 
 
+def _config_error_response(exc: Exception, direction: str) -> Response:
+    """Always fail closed for misconfiguration — never soft-pass the rail."""
+    logger.error(
+        "[%s] DeepKeep config error (%s) → HTTP 503 (never fail-open)",
+        direction,
+        exc,
+    )
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "DeepKeep AI Firewall misconfigured",
+            "detail": str(exc),
+        },
+    )
+
+
 def _decide_verdict(
     dk_result: dict[str, Any], direction: str
 ) -> tuple[str, str | None]:
@@ -355,6 +392,8 @@ async def input_guardrail(request: Request):
             "input",
             text,
         )
+    except DeepKeepConfigError as exc:
+        return _config_error_response(exc, "input")
     except DeepKeepUnavailable as exc:
         return _unavailable_response(exc, "input", request_body)
 
@@ -415,6 +454,8 @@ async def output_guardrail(request: Request):
             "output",
             text,
         )
+    except DeepKeepConfigError as exc:
+        return _config_error_response(exc, "output")
     except DeepKeepUnavailable as exc:
         return _unavailable_response(exc, "output", response_body)
 
