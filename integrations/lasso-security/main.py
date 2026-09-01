@@ -81,6 +81,8 @@ async def debug_runtime_config() -> dict:
         "lasso_api_base_env": os.environ.get("LASSO_API_BASE", DEFAULT_API_BASE),
         "default_timeout": DEFAULT_TIMEOUT,
         "lasso_api_key_configured": bool(os.environ.get("LASSO_API_KEY", "").strip()),
+        "lasso_agent_id_env": os.environ.get("LASSO_AGENT_ID", "").strip() or None,
+        "lasso_agent_name_env": os.environ.get("LASSO_AGENT_NAME", "").strip() or None,
         "wrapper_auth_enabled": bool(WRAPPER_API_KEY),
         "routes": {
             "input_validate": "/lasso-classify",

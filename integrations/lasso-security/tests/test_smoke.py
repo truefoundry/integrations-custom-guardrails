@@ -64,12 +64,29 @@ def auth() -> dict[str, str]:
 def _lasso_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     # _resolve_api_key reads LASSO_API_KEY before the (mocked) HTTP call.
     monkeypatch.setenv("LASSO_API_KEY", "test-key")
+    # Agent identity is opt-in; keep a developer's .env out of the assertions.
+    monkeypatch.delenv("LASSO_AGENT_ID", raising=False)
+    monkeypatch.delenv("LASSO_AGENT_NAME", raising=False)
 
 
 def _mock_lasso(monkeypatch: pytest.MonkeyPatch, payload: dict) -> None:
     import guardrail.lasso as lasso
 
     monkeypatch.setattr(lasso.requests, "post", lambda *a, **k: _FakeResponse(payload))
+
+
+def _mock_lasso_capture(monkeypatch: pytest.MonkeyPatch, payload: dict) -> dict:
+    """Like _mock_lasso, but returns a dict that receives the body sent to Lasso."""
+    import guardrail.lasso as lasso
+
+    captured: dict = {}
+
+    def _post(*args, **kwargs) -> _FakeResponse:
+        captured.update(kwargs.get("json") or {})
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr(lasso.requests, "post", _post)
+    return captured
 
 
 def _classifix_with_span(role: str, content: str, action: str = "AUTO_MASKING") -> dict:
@@ -197,3 +214,141 @@ def test_input_classifix_masks_pii(
     masked = data["result"]["messages"][0]["content"]
     assert EMAIL not in masked
     assert "<EMAIL_ADDRESS>" in masked
+
+
+# --- Agent identity (optional agentId / agentName attribution) --------------
+
+_PROMPT_BODY = {"requestBody": {"messages": [{"role": "user", "content": "hi"}]}, "context": CTX}
+
+
+def test_agent_identity_from_env(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LASSO_AGENT_ID", "agent-42")
+    monkeypatch.setenv("LASSO_AGENT_NAME", "Support Bot")
+    sent = _mock_lasso_capture(monkeypatch, _CLEAN)
+    client.post("/lasso-classify", json=_PROMPT_BODY, headers=auth)
+    assert sent["agentId"] == "agent-42"
+    assert sent["agentName"] == "Support Bot"
+
+
+def test_agent_identity_omitted_when_unset(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No config, no metadata, no env -> the fields must not appear at all."""
+    sent = _mock_lasso_capture(monkeypatch, _CLEAN)
+    client.post("/lasso-classify", json=_PROMPT_BODY, headers=auth)
+    assert "agentId" not in sent
+    assert "agentName" not in sent
+
+
+def test_agent_identity_metadata_overrides_env(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-request gateway metadata wins over the static deploy env default."""
+    monkeypatch.setenv("LASSO_AGENT_ID", "env-agent")
+    monkeypatch.setenv("LASSO_AGENT_NAME", "Env Bot")
+    sent = _mock_lasso_capture(monkeypatch, _CLEAN)
+    body = {
+        "requestBody": {"messages": [{"role": "user", "content": "hi"}]},
+        "context": {
+            **CTX,
+            "metadata": {"lasso-agent-id": "req-agent", "lasso-agent-name": "Req Bot"},
+        },
+    }
+    client.post("/lasso-classify", json=body, headers=auth)
+    assert sent["agentId"] == "req-agent"
+    assert sent["agentName"] == "Req Bot"
+
+
+def test_agent_identity_metadata_overrides_config(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-request metadata is the most specific source and beats Config JSON."""
+    sent = _mock_lasso_capture(monkeypatch, _CLEAN)
+    body = {
+        "requestBody": {"messages": [{"role": "user", "content": "hi"}]},
+        "context": {**CTX, "metadata": {"agent_id": "meta-agent"}},
+        "config": {"agentId": "config-agent"},
+    }
+    client.post("/lasso-classify", json=body, headers=auth)
+    assert sent["agentId"] == "meta-agent"
+
+
+def test_agent_identity_config_overrides_env(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Middle rung: with no per-request metadata, Config JSON beats the deploy env."""
+    monkeypatch.setenv("LASSO_AGENT_ID", "env-agent")
+    sent = _mock_lasso_capture(monkeypatch, _CLEAN)
+    body = {**_PROMPT_BODY, "config": {"agentId": "config-agent"}}
+    client.post("/lasso-classify", json=body, headers=auth)
+    assert sent["agentId"] == "config-agent"
+
+
+def test_agent_id_without_agent_name(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two fields resolve independently; agentId alone is a valid payload."""
+    sent = _mock_lasso_capture(monkeypatch, _CLEAN)
+    body = {**_PROMPT_BODY, "config": {"agentId": "agent-42"}}
+    client.post("/lasso-classify", json=body, headers=auth)
+    assert sent["agentId"] == "agent-42"
+    assert "agentName" not in sent
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        ("   ", "blank after strip"),
+        ("a" * 129, "over the 128-char limit"),
+        ("agent\x01id", "Unicode control character (Cc)"),
+        ("agent\u200bid", "Unicode format character (Cf)"),
+    ],
+)
+def test_invalid_agent_id_dropped(
+    client: TestClient,
+    auth: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    reason: str,
+) -> None:
+    """Lasso 400s the whole request on a malformed agentId, which would lose all
+    scanning for that call. Drop the value and scan anyway."""
+    sent = _mock_lasso_capture(monkeypatch, _CLEAN)
+    body = {**_PROMPT_BODY, "config": {"agentId": value}}
+    data = client.post("/lasso-classify", json=body, headers=auth).json()
+    assert data["verdict"] is True, reason
+    assert "agentId" not in sent
+
+
+def test_invalid_metadata_falls_back_to_config(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolution takes the first *usable* candidate. An unusable per-request
+    value falls through to the next source rather than dropping identity
+    altogether — the same as if metadata had not carried the key at all."""
+    sent = _mock_lasso_capture(monkeypatch, _CLEAN)
+    body = {
+        "requestBody": {"messages": [{"role": "user", "content": "hi"}]},
+        "context": {**CTX, "metadata": {"agent_id": "a" * 129}},
+        "config": {"agentId": "config-agent"},
+    }
+    client.post("/lasso-classify", json=body, headers=auth)
+    assert sent["agentId"] == "config-agent"
+
+
+def test_agent_identity_sent_on_mutate_output_rail(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every rail shares _invoke_lasso, so the output mutate rail carries it too."""
+    monkeypatch.setenv("LASSO_AGENT_ID", "agent-42")
+    sent = _mock_lasso_capture(monkeypatch, _CLEAN)
+    body = {
+        "requestBody": {"messages": [{"role": "user", "content": "hi"}]},
+        "responseBody": {"choices": [{"message": {"role": "assistant", "content": "hello"}}]},
+        "context": CTX,
+    }
+    client.post("/lasso-classifix-output", json=body, headers=auth)
+    assert sent["agentId"] == "agent-42"
+    assert sent["messageType"] == "COMPLETION"
