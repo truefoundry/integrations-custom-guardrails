@@ -25,7 +25,7 @@ import os
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 
-from guardrail._onyx_client import DEFAULT_API_BASE, DEFAULT_TIMEOUT
+from guardrail._onyx_client import DEFAULT_TIMEOUT
 from guardrail.onyx_input import onyx_input
 from guardrail.onyx_output import onyx_output
 
@@ -91,7 +91,8 @@ async def debug_loaded_config() -> dict:
     return {
         "routes": {"input": input_routes, "output": output_routes},
         "wrapper_version": os.environ.get("BUILD_REF", "unknown"),
-        "onyx_api_base_env": os.environ.get("ONYX_API_BASE", DEFAULT_API_BASE),
+        "onyx_api_base_env": os.environ.get("ONYX_API_BASE") or None,
+        "onyx_api_base_configured": bool(os.environ.get("ONYX_API_BASE", "").strip()),
         "default_timeout": DEFAULT_TIMEOUT,
         "onyx_api_key_configured": bool(os.environ.get("ONYX_API_KEY", "").strip()),
         "wrapper_auth_enabled": bool(WRAPPER_API_KEY),

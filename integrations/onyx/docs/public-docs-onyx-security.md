@@ -159,7 +159,7 @@ Expect `{"verdict": false, ...}` when Onyx blocks, or `{"verdict": true}` when a
 curl -sS https://<host>/debug/loaded-config -H "Authorization: Bearer $WRAPPER_API_KEY"
 ```
 
-Confirm `onyx_api_key_configured: true` and the `routes` map.
+Confirm `onyx_api_key_configured: true`, `onyx_api_base_configured: true`, and the `routes` map.
 
 ## Troubleshooting
 
@@ -167,6 +167,7 @@ Confirm `onyx_api_key_configured: true` and the `routes` map.
 |---|---|
 | `401` from wrapper | `WRAPPER_API_KEY` on the service does not match the dashboard Bearer token |
 | `500` "Onyx API key not configured" | Missing `ONYX_API_KEY` and no `config.credentials.apiKey` override |
+| `500` "Onyx API base not configured" | Missing `ONYX_API_BASE` and no `config.api_base` override |
 | Input blocks but output allows the same phrase | Onyx policy has an Input rule only; add an Output-direction rule |
 | `modify` content still blocked | Validate rails fail-safe; masking needs a future Mutate rail |
 | Gateway allows despite `verdict: false` | Tenant gateway not honoring verdict-on-200; set Enforce or upgrade gateway |

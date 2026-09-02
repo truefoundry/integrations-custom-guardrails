@@ -30,6 +30,8 @@ async def onyx_output(request: OutputGuardrailRequest) -> ValidateGuardrailRespo
     api_key, api_base, timeout = resolve_settings(request.config)
     if not api_key:
         raise HTTPException(status_code=500, detail="Onyx API key not configured")
+    if not api_base:
+        raise HTTPException(status_code=500, detail="Onyx API base not configured")
 
     try:
         result = await evaluate(

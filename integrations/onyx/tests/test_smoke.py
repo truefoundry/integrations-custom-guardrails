@@ -29,8 +29,11 @@ except ImportError:
 
 
 requires_onyx = pytest.mark.skipif(
-    not os.environ.get("ONYX_API_KEY", "").strip(),
-    reason="needs ONYX_API_KEY to call Onyx AI Guard",
+    not (
+        os.environ.get("ONYX_API_KEY", "").strip()
+        and os.environ.get("ONYX_API_BASE", "").strip()
+    ),
+    reason="needs ONYX_API_KEY and ONYX_API_BASE to call Onyx AI Guard",
 )
 
 
@@ -130,6 +133,27 @@ def test_debug_loaded_config_lists_routes(client: TestClient, auth: dict[str, st
     assert "/onyx-output" in body["routes"]["output"]
     assert "wrapper_version" in body
     assert "onyx_api_key_configured" in body
+    assert "onyx_api_base_configured" in body
+
+
+def test_missing_api_base_returns_500(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ONYX_API_KEY", "test-policy-token")
+    monkeypatch.delenv("ONYX_API_BASE", raising=False)
+    r = client.post("/onyx-input", headers=auth, json=_input_body("hi"))
+    assert r.status_code == 500, r.text
+    assert "Onyx API base not configured" in r.text
+
+
+def test_missing_api_key_returns_500(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ONYX_API_KEY", raising=False)
+    monkeypatch.setenv("ONYX_API_BASE", "https://tenant.ai-guard.onyx.security")
+    r = client.post("/onyx-input", headers=auth, json=_input_body("hi"))
+    assert r.status_code == 500, r.text
+    assert "Onyx API key not configured" in r.text
 
 
 def test_onyx_http_error_502_does_not_leak_api_key(
@@ -143,6 +167,7 @@ def test_onyx_http_error_502_does_not_leak_api_key(
 
     secret = "leak-me-onyx-policy-token"
     monkeypatch.setenv("ONYX_API_KEY", secret)
+    monkeypatch.setenv("ONYX_API_BASE", "https://tenant.ai-guard.onyx.security")
 
     real_async_client = httpx.AsyncClient
 
@@ -152,11 +177,11 @@ def test_onyx_http_error_502_does_not_leak_api_key(
         def raise_for_status(self) -> None:
             req = httpx.Request(
                 "POST",
-                f"https://ai-guard.onyx.security/guard/evaluate/v1/{secret}/simple",
+                f"https://tenant.ai-guard.onyx.security/guard/evaluate/v1/{secret}/simple",
             )
             raise httpx.HTTPStatusError(
                 f"Client error '401 Unauthorized' for url "
-                f"'https://ai-guard.onyx.security/guard/evaluate/v1/{secret}/simple'",
+                f"'https://tenant.ai-guard.onyx.security/guard/evaluate/v1/{secret}/simple'",
                 request=req,
                 response=httpx.Response(401, request=req),
             )
@@ -202,6 +227,7 @@ def test_onyx_200_without_usable_action_returns_502(
     import httpx
 
     monkeypatch.setenv("ONYX_API_KEY", "test-policy-token")
+    monkeypatch.setenv("ONYX_API_BASE", "https://tenant.ai-guard.onyx.security")
 
     class _FakeResponse:
         status_code = 200

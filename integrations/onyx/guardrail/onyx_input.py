@@ -31,6 +31,8 @@ async def onyx_input(request: InputGuardrailRequest) -> ValidateGuardrailRespons
     if not api_key:
         # Misconfiguration is a real error, not a policy decision -> 5xx.
         raise HTTPException(status_code=500, detail="Onyx API key not configured")
+    if not api_base:
+        raise HTTPException(status_code=500, detail="Onyx API base not configured")
 
     try:
         result = await evaluate(
