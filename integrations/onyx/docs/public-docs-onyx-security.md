@@ -65,10 +65,11 @@ cp .env.example .env
 
 ```bash
 ONYX_API_KEY=<from https://onyx.security>
+ONYX_API_BASE=https://<routing-id>.ai-guard.onyx.security
 WRAPPER_API_KEY=<generate: python -c "import secrets; print(secrets.token_urlsafe(32))">
 ```
 
-Get `ONYX_API_KEY` in the Onyx platform. Default API base: `https://ai-guard.onyx.security` (override with `ONYX_API_BASE` if your tenant uses a different base).
+Get `ONYX_API_KEY` in the Onyx platform. Set `ONYX_API_BASE` to your tenant's AI Guard host (`https://<routing-id>.ai-guard.onyx.security`). The bare host `https://ai-guard.onyx.security` is not routed to any tenant and returns 404.
 
 ## Deploy the wrapper
 
@@ -176,5 +177,5 @@ Confirm `onyx_api_key_configured: true` and the `routes` map.
 |---|---|
 | Source repo | `truefoundry/integrations-custom-guardrails/integrations/onyx` |
 | Onyx platform | [onyx.security](https://onyx.security) (policy token) |
-| Onyx API base | `https://ai-guard.onyx.security` |
+| Onyx API base | `https://<routing-id>.ai-guard.onyx.security` (required; bare `ai-guard.onyx.security` 404s) |
 | Selector | `onyx-security/<config-name>` |

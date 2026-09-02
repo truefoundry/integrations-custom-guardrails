@@ -123,7 +123,7 @@ v1 is **validate-only**. When Onyx returns `action: modify` (and would supply `m
 | Source | Keys | Purpose |
 |---|---|---|
 | Deploy env / TFY secret | `ONYX_API_KEY` | Policy token embedded in the evaluate URL (auth to Onyx) |
-| Deploy env | `ONYX_API_BASE` | Policy/tenant-specific Onyx base URL |
+| Deploy env | `ONYX_API_BASE` | Required. Tenant AI Guard host (`https://<routing-id>.ai-guard.onyx.security`). Bare `ai-guard.onyx.security` is not routed (404s). |
 | Deploy env | `ONYX_TIMEOUT` | Default timeout in seconds (default `10`) |
 | Deploy env / TFY secret | `WRAPPER_API_KEY` | Bearer auth gateway → wrapper (dashboard Custom Bearer Auth) |
 | Dashboard Config JSON | `credentials.apiKey` | Per-config policy-token override |

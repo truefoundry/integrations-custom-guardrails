@@ -60,7 +60,7 @@ Real Onyx errors (network, non-2xx) surface as a wrapper `5xx`, so the gateway's
 | Var | Purpose |
 |---|---|
 | `ONYX_API_KEY` | Policy token embedded in the Onyx evaluate URL (auth to Onyx) |
-| `ONYX_API_BASE` | Policy/tenant-specific Onyx base URL |
+| `ONYX_API_BASE` | Required. Your tenant's AI Guard host (`https://<routing-id>.ai-guard.onyx.security`). Bare `https://ai-guard.onyx.security` is not routed and 404s. |
 | `WRAPPER_API_KEY` | Bearer token the **gateway** presents to **this wrapper** (dashboard Custom Bearer Auth) |
 
 Do not confuse `WRAPPER_API_KEY` with `ONYX_API_KEY` — they are different secrets
