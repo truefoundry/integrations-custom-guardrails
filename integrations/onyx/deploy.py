@@ -80,7 +80,7 @@ WRAPPER_API_KEY_SECRET_FQN = os.environ.get(
     "tfy-secret://<workspace>/onyx-guardrails-tfy/wrapper-api-key",
 )
 
-ONYX_API_BASE = os.environ.get("ONYX_API_BASE", "https://ai-guard.onyx.security")
+ONYX_API_BASE = os.environ.get("ONYX_API_BASE", "").strip()
 
 BUILD_REF = _build_ref()
 
@@ -134,9 +134,16 @@ def build_service() -> Service:
 
 def _check_placeholders() -> None:
     """Fail loudly if any required value still contains `<...>` (an unfilled placeholder)."""
+    if not ONYX_API_BASE:
+        raise SystemExit(
+            "ONYX_API_BASE is required "
+            "(https://<routing-id>.ai-guard.onyx.security). "
+            "Bare https://ai-guard.onyx.security is not routed and 404s."
+        )
     fields = {
         "WORKSPACE_FQN": WORKSPACE_FQN,
         "PUBLIC_HOST": PUBLIC_HOST,
+        "ONYX_API_BASE": ONYX_API_BASE,
         "ONYX_API_KEY_SECRET_FQN": ONYX_API_KEY_SECRET_FQN,
         "WRAPPER_API_KEY_SECRET_FQN": WRAPPER_API_KEY_SECRET_FQN,
     }

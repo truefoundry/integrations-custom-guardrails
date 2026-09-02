@@ -73,7 +73,7 @@ Onyx is SaaS-only with a structured HTTP API — a strong fit for the custom-gua
 ### Input (`POST /onyx-input`)
 
 1. Extract last user text via `last_user_text(requestBody.messages)`. If `None` → `verdict=true` without calling Onyx.
-2. Resolve policy token / `api_base` / `timeout` from dashboard `config` then env. Missing token → HTTP 500 (misconfiguration, not a policy decision).
+2. Resolve policy token / `api_base` / `timeout` from dashboard `config` then env. Missing token or base → HTTP 500 (misconfiguration, not a policy decision).
 3. `POST {api_base}/guard/evaluate/v1/{token}/simple` with body `{"user_prompt": "<text>"}` and header `Content-Type: application/json` only (no `Authorization` to Onyx).
 4. Branch on `action` (Onyx always returns HTTP 200 for policy decisions):
    - `allow` → `ValidateGuardrailResponse(verdict=True)`
@@ -173,6 +173,7 @@ Per-rail files (not a single `guardrail/onyx.py`) match `_template/` and NeMo / 
 |---|---|---|
 | 401 from wrapper | Bearer token mismatch | Sync `WRAPPER_API_KEY` secret, pod env, dashboard Custom Bearer Auth |
 | 500 "Onyx API key not configured" | Missing `ONYX_API_KEY` secret and no `config.credentials.apiKey` | Create secret; redeploy; or set Config JSON |
+| 500 "Onyx API base not configured" | Missing `ONYX_API_BASE` and no `config.api_base` | Set tenant host `https://<routing-id>.ai-guard.onyx.security` |
 | 502 "Onyx AI Guard call failed" | Onyx outage, bad token, wrong base URL, timeout, or 200 body without usable `action` | Check Onyx status / `ONYX_API_BASE` / token; raise `ONYX_TIMEOUT`; `Fail on error` decides pass vs block |
 | Input blocks but output allows the same phrase | Policy has Input rule only | Expected until an Output-direction rule is added in Onyx |
 | `modify` content still blocked | Validate rails fail-safe | Expected — need a Mutate rail to apply `modified_prompt` / `modified_response` |

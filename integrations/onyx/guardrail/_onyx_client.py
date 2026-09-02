@@ -20,7 +20,6 @@ from typing import Literal
 
 import httpx
 
-DEFAULT_API_BASE = "https://ai-guard.onyx.security"
 DEFAULT_TIMEOUT = 10.0
 _KNOWN_ACTIONS = frozenset({"allow", "block", "modify"})
 
@@ -44,9 +43,9 @@ def resolve_settings(config: dict | None) -> tuple[str, str, float]:
     cfg = config or {}
     creds = cfg.get("credentials") or {}
     api_key = (creds.get("apiKey") or os.environ.get("ONYX_API_KEY", "")).strip()
-    api_base = (
-        cfg.get("api_base") or os.environ.get("ONYX_API_BASE") or DEFAULT_API_BASE
-    ).strip()
+    # No soft-default: bare https://ai-guard.onyx.security is not routed (404s).
+    # Callers must set ONYX_API_BASE or config.api_base to the tenant host.
+    api_base = (cfg.get("api_base") or os.environ.get("ONYX_API_BASE") or "").strip()
     timeout = float(cfg.get("timeout") or os.environ.get("ONYX_TIMEOUT") or DEFAULT_TIMEOUT)
     return api_key, api_base, timeout
 
