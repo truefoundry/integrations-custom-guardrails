@@ -21,6 +21,7 @@ Each `integrations/<vendor>/` directory is a standard FastAPI Docker container t
 | [`integrations/arthur-ai/`](integrations/arthur-ai/) | [Arthur GenAI Engine](https://platform.arthur.ai) stateless validation API (SaaS) | `/validate-input`, `/validate-output` |
 | [`integrations/verra/`](integrations/verra/) | [Verra](https://helloverra.com) managed AI governance (SaaS validate + mutate) | `/scan-input`, `/redact-input`, `/scan-output`, `/redact-output` |
 | [`integrations/hiddenlayer/`](integrations/hiddenlayer/) | [HiddenLayer AISec](https://hiddenlayer.com) Detection v2 API (validate + inline redact) | `/validate-input`, `/validate-output`, `/redact-input`, `/redact-output` |
+| [`integrations/onyx/`](integrations/onyx/) | [Onyx AI Guard](https://onyx.security) SaaS policy evaluation — native `truefoundry` source (no wrapper) or FastAPI `/simple` wrapper | native: `…/guard/evaluate/v1/<token>/truefoundry` · wrapper: `/onyx-input`, `/onyx-output` |
 
 Each integration ships with its own `deploy.py` (a TrueFoundry Python SDK example) that prints the resolved public URL after a successful run. Use it as-is, swap it for your own deploy step (ECS task, Cloud Run service, Kubernetes manifest, etc.), or skip it entirely — the URL is what matters, not the hosting path.
 

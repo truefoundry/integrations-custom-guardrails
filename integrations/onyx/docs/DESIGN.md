@@ -31,6 +31,8 @@ Three integration paths were considered:
 
 Onyx is SaaS-only with a structured HTTP API — a strong fit for the custom-guardrail path while validating product-market fit. Closest sibling in this repo: `integrations/lasso-security/`.
 
+> **Update — Onyx native `truefoundry` source.** Onyx now ships a dedicated `truefoundry` custom-guardrail source that speaks this gateway's `{verdict, message}` contract directly: a path between A and C that needs **no wrapper** (register Onyx's `…/guard/evaluate/v1/<token>/truefoundry` evaluate URL as the Custom Guardrail URL) and **no `tfy-llm-gateway` change**. It consumes the whole gateway body (`requestBody` / `responseBody` / `context`) — the opposite of this wrapper's extracted-text `/simple` calls — and answers `{"verdict": true}` on allow, `{"verdict": false, "message": …}` on block/mask/ask, and a fail-closed `{"verdict": false}` on a malformed body. It is the recommended path for tenants that have it; this wrapper remains valid for a self-hosted shim or older tenants. See [`../README.md`](../README.md) "Native path".
+
 ## Architecture
 
 ```
@@ -189,4 +191,4 @@ text into 502 bodies.
 1. Mutate rail that applies Onyx `modified_prompt` / `modified_response` on `action: modify` (pattern: `integrations/lasso-security/` classifix).
 2. Verify output-direction blocking once the Onyx test (or production) policy has an Output rule; unskip `test_policy_violation_output_blocks`.
 3. Blog draft + public-docs page (Phase 7 artifacts).
-4. Promote to a native plugin in `tfy-llm-gateway` if Onyx becomes a strategic integration — HTTP mapping logic stays the same.
+4. Onyx now offers a **native `truefoundry` custom-guardrail source** (no wrapper; see README "Native path"), which supersedes this wrapper for tenants that have it. A native plugin *inside* `tfy-llm-gateway` remains a separate, larger step if Onyx becomes strategic — the HTTP mapping logic stays the same.
