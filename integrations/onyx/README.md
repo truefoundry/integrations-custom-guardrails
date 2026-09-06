@@ -10,6 +10,51 @@ blocked — on these rails; real masking would need a future Mutate rail.
 
 > **Architecture & design notes**: see [`docs/DESIGN.md`](docs/DESIGN.md).
 
+## Two ways to run Onyx AI Guard on the gateway
+
+Onyx now speaks the TrueFoundry custom-guardrail contract **natively**, so there are two ways to wire it up — both return the same `{"verdict": …}` shape to the gateway; they differ only in whether you host a shim:
+
+| Path | What you deploy | Best for |
+|---|---|---|
+| **Native `truefoundry` source** (recommended) | Nothing — register Onyx's evaluate URL directly as the Custom Guardrail URL | Onyx tenants with the dedicated `truefoundry` source |
+| **This FastAPI wrapper** (`/simple`) | This container, on any HTTPS host reachable from the gateway | A self-hosted shim, or older Onyx tenants without the native source |
+
+The native path is described next; the rest of this document covers the wrapper.
+
+### Native path — no wrapper to deploy
+
+Onyx ships a dedicated **`truefoundry`** custom-guardrail source that consumes TrueFoundry's request/response bodies directly and answers with the gateway's `{"verdict": bool, "message"?: str}` shape. There is **no wrapper container to build, host, or deploy** and **no `WRAPPER_API_KEY`** — register Onyx's evaluate endpoint as the Custom Guardrail URL and you are done.
+
+**Custom Guardrail URL (the same URL serves both rails):**
+
+```
+POST {ONYX_API_BASE}/guard/evaluate/v1/<GUARD_TOKEN>/truefoundry
+```
+
+- `ONYX_API_BASE` — your tenant AI Guard host, `https://<routing-id>.ai-guard.onyx.security`. The bare host `https://ai-guard.onyx.security` is not routed to any tenant and 404s.
+- `<GUARD_TOKEN>` — the per-policy Guard Token from the Onyx console. It sits **in the URL path** and is the only auth Onyx needs, so leave the dashboard **Custom Bearer Auth empty** for these configs.
+
+**Contract (spoken natively by Onyx):**
+
+| Rail | Body the gateway sends | Direction selector |
+|---|---|---|
+| Input (`llm_input`) | `{"requestBody": {…}, "context": {…}, "config"?: {…}}` | no `responseBody` |
+| Output (`llm_output`) | the input body **plus** `"responseBody": {…}` | `responseBody` present |
+
+| Onyx decision | Native response (always HTTP 200) |
+|---|---|
+| allow | `{"verdict": true}` |
+| block / mask / ask | `{"verdict": false, "message": "<reason>"}` |
+| unparseable / malformed body | `{"verdict": false}` — Onyx fails **closed** |
+
+- **Validate-only.** A Mask rule is still **evaluated** — the sensitive content is detected — but because a gateway guardrail is a validate rail (it cannot hand a rewritten payload back to the gateway), a mask hit is returned as a **block** (`verdict: false`), never masked in place and **never silently allowed through**. Onyx does not return the `transformed`/`result` mutate shape on this path.
+- **Always HTTP 200.** A block is a `200` with `verdict: false`, never a 4xx — matching this repo's contract.
+- **Attribution.** TrueFoundry's contract carries no gateway name, so all TrueFoundry traffic rolls up under a single per-tenant **TrueFoundry Gateway** asset in the Onyx inventory.
+
+**Register it:** AI Gateway → Guardrails → Add New Guardrails Group → `onyx-ai-guard`, then one Custom Guardrail Config per rail with **Operation `Validate`**, the URL above, **Custom Bearer Auth empty**, `Config {}`, and **Fail on error `false`** (use `true` to fail closed on an Onyx outage — Onyx already fails closed internally on a malformed body). Attach with the `X-TFY-GUARDRAILS` selector exactly like any other group.
+
+---
+
 ## Endpoints
 
 | Method | Path | Purpose |

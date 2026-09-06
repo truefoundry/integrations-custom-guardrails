@@ -1,6 +1,63 @@
 # Onyx Security
 
-> Onyx AI Guard on TrueFoundry AI Gateway via a deployable FastAPI wrapper.
+> Onyx AI Guard on the TrueFoundry AI Gateway. Two paths: the **native `truefoundry` source** — register Onyx's evaluate URL directly, no wrapper to deploy (recommended) — or the **deployable FastAPI wrapper** in this folder (calls Onyx `/simple`).
+
+## Native path — register Onyx directly (recommended, no wrapper)
+
+Onyx exposes a dedicated **`truefoundry`** custom-guardrail source that speaks the gateway's custom-guardrail contract natively. You register Onyx's evaluate endpoint as the Custom Guardrail URL — there is nothing to build, host, or deploy.
+
+### What you need
+
+- An Onyx AI Guard tenant with the `truefoundry` source, and a policy with the Input and/or Output rules you want enforced.
+- Your tenant **AI Guard base URL**: `https://<routing-id>.ai-guard.onyx.security` (from the Onyx console). The bare `https://ai-guard.onyx.security` is not routed and 404s.
+- The per-policy **Guard Token** from the Onyx console.
+
+### Register the Custom Guardrail configs
+
+AI Gateway → Guardrails → + Add New Guardrails Group → `onyx-ai-guard`. Add one Custom Guardrail Config per rail:
+
+| Field | Input rail | Output rail |
+|---|---|---|
+| Name | `onyx-input` | `onyx-output` |
+| Operation | Validate | Validate |
+| Target | Request | Response |
+| URL | `https://<routing-id>.ai-guard.onyx.security/guard/evaluate/v1/<GUARD_TOKEN>/truefoundry` | same URL |
+| Auth Data | none — Guard Token is in the URL path (leave Custom Bearer Auth empty) | none |
+| Config | `{}` | `{}` |
+| Fail on error | `false` | `false` |
+
+The same URL serves both rails: Onyx selects the input vs output direction by whether the gateway includes a `responseBody`.
+
+### How Onyx answers
+
+Every decision is HTTP 200:
+
+| Onyx decision | Response |
+|---|---|
+| allow | `{"verdict": true}` |
+| block / mask / ask | `{"verdict": false, "message": "<reason>"}` |
+| malformed body | `{"verdict": false}` (fails closed) |
+
+A Mask rule is **evaluated** — the content is detected — and returned as a **block** (`verdict: false`); these rails do not mask in place, and never allow a masked hit through silently. All TrueFoundry traffic appears under a per-tenant **TrueFoundry Gateway** asset in Onyx.
+
+### Attach and test
+
+Attach the group to a model, or pin per request with the `X-TFY-GUARDRAILS` header:
+
+```json
+{
+  "llm_input_guardrails": ["onyx-ai-guard/onyx-input"],
+  "llm_output_guardrails": ["onyx-ai-guard/onyx-output"]
+}
+```
+
+Send a benign prompt (expect `verdict: true` and a normal completion) and a prompt your Onyx policy blocks (expect the gateway to short-circuit with your policy's block message).
+
+> Prefer a self-hosted shim, or on an Onyx tenant without the native source? Use the FastAPI wrapper documented below.
+
+---
+
+## Wrapper path — deploy the FastAPI shim
 
 Deploy the `integrations/onyx` FastAPI wrapper on any public HTTPS host. The AI Gateway calls it at `llm_input` / `llm_output` via the Custom Guardrail contract; the wrapper forwards extracted text to Onyx AI Guard `/simple` and returns `verdict` JSON on HTTP 200.
 
