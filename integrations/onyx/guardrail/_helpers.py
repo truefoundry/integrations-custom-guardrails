@@ -1,7 +1,8 @@
 """Shared message-extraction helpers (per integration; not cross-integration).
 
-Onyx /simple wants extracted text (``user_prompt`` / ``response``), so these
-helpers both short-circuit empty traffic and supply the payload for evaluate().
+Used to short-circuit empty traffic before calling Onyx /truefoundry. Onyx
+itself extracts the latest user message / first assistant message from the
+TrueFoundry body; we only use these helpers locally to skip empty calls.
 """
 
 from __future__ import annotations

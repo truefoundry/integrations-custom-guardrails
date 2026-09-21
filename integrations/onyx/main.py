@@ -1,20 +1,17 @@
-"""FastAPI app for the Onyx Security custom guardrail wrapper.
+"""FastAPI app — optional local forwarder to Onyx AI Guard /truefoundry.
 
-Endpoints (per-rail; one route per rail file):
+Production: point Custom Guardrails directly at
+``{ONYX_API_BASE}/guard/evaluate/v1/{ONYX_API_KEY}/truefoundry`` (Auth Data empty).
+This app exists for local smoke tests and debugging; it forwards the TrueFoundry
+payload unchanged and returns Onyx's verdict.
+
+Endpoints:
 
     GET  /                       health check (open)
     GET  /health                 health check (open)
-    POST /onyx-input             Onyx AI Guard - input validate
-    POST /onyx-output            Onyx AI Guard - output validate
-    GET  /debug/loaded-config    diagnostics (bearer-auth gated)
-
-A shared bearer token gates the rail endpoints and /debug. Configure the same
-token in the TrueFoundry dashboard under Custom Bearer Auth.
-
-Response contract: per the TFY AI Gateway custom-guardrail contract (tfy-llm-gateway
-commit a1c551be). Validate handlers return HTTP 200 with ValidateGuardrailResponse
-JSON. Allow is {verdict: true}; block is {verdict: false, message: ...}. Non-2xx is
-reserved for real errors, which the dashboard's `Fail on error` policy then routes.
+    POST /onyx-input             forward input payload to Onyx /truefoundry
+    POST /onyx-output            forward output payload to Onyx /truefoundry
+    GET  /debug/loaded-config    diagnostics (bearer-auth gated when WRAPPER_API_KEY set)
 """
 
 from __future__ import annotations
