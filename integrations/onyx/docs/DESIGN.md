@@ -125,6 +125,9 @@ onyx/
 | Mask content blocked | Validate cannot rewrite | Expected |
 | Token leaked in client errors | Gateway includes URL in `guardrail_checks` | Redact logs; rotate Guard Token |
 
+Do not log the evaluate URL — it contains the Guard Token. The optional forwarder's
+`evaluate()` raises `OnyxClientError` with a URL-free message (no chained httpx cause).
+
 ## Future work
 
 1. Mutate rail if TrueFoundry + Onyx add in-place masking on this path.
