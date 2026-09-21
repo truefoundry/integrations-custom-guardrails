@@ -1,13 +1,13 @@
-"""Smoke tests for the Onyx Security wrapper.
+"""Smoke tests for the Onyx Security /truefoundry integration.
 
-Boots the FastAPI app in-process via TestClient. Cases that would call Onyx AI
-Guard are skipped unless ``ONYX_API_KEY`` is set, so the suite is green in CI
-without secrets.
+Boots the FastAPI app in-process via TestClient (optional local forwarder).
+Live cases that call Onyx skip unless ``ONYX_API_KEY`` and ``ONYX_API_BASE``
+are set.
 
 Run:
     pytest -v tests/
 
-Response contract under test (post tfy-llm-gateway commit a1c551be):
+Response contract under test (Onyx /truefoundry = TFY custom-guardrail contract):
     Allow -> HTTP 200 + {"verdict": true}
     Block -> HTTP 200 + {"verdict": false, "message": "..."}
 """
@@ -51,21 +51,29 @@ def auth() -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"} if key else {}
 
 
-CTX = {"user": {"subjectId": "u1", "subjectType": "user"}}
+# Onyx /truefoundry requires subjectSlug on context.user (returns
+# "could not validate the request" without it).
+CTX = {
+    "user": {"subjectId": "u1", "subjectType": "user", "subjectSlug": "u1"},
+    "metadata": {"request_id": "test-req"},
+}
 
 
 def _input_body(content: str) -> dict:
     return {
         "requestBody": {"model": "gpt-4o", "messages": [{"role": "user", "content": content}]},
         "context": CTX,
+        "config": {},
     }
 
 
 def _output_body(content: str, user_msg: str = "hi") -> dict:
+    """Output test: keep blocked keywords out of the input (PDF guidance)."""
     return {
         "requestBody": {"model": "gpt-4o", "messages": [{"role": "user", "content": user_msg}]},
         "responseBody": {"choices": [{"message": {"role": "assistant", "content": content}}]},
         "context": CTX,
+        "config": {},
     }
 
 
@@ -98,7 +106,6 @@ def test_wrong_bearer_returns_401(client: TestClient) -> None:
 
 
 def test_no_user_message_passes_through(client: TestClient, auth: dict[str, str]) -> None:
-    # System-only history -> nothing for the input rail to check -> short-circuit verdict=true.
     r = client.post(
         "/onyx-input",
         headers=auth,
@@ -159,10 +166,7 @@ def test_missing_api_key_returns_500(
 def test_onyx_http_error_502_does_not_leak_api_key(
     client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Regression: httpx.HTTPStatusError embeds the request URL (policy token in path).
-
-    Wrapper 502 bodies must not echo that URL / token to the gateway or logs.
-    """
+    """Regression: httpx.HTTPStatusError embeds the request URL (token in path)."""
     import httpx
 
     secret = "leak-me-onyx-policy-token"
@@ -177,11 +181,11 @@ def test_onyx_http_error_502_does_not_leak_api_key(
         def raise_for_status(self) -> None:
             req = httpx.Request(
                 "POST",
-                f"https://tenant.ai-guard.onyx.security/guard/evaluate/v1/{secret}/simple",
+                f"https://tenant.ai-guard.onyx.security/guard/evaluate/v1/{secret}/truefoundry",
             )
             raise httpx.HTTPStatusError(
                 f"Client error '401 Unauthorized' for url "
-                f"'https://tenant.ai-guard.onyx.security/guard/evaluate/v1/{secret}/simple'",
+                f"'https://tenant.ai-guard.onyx.security/guard/evaluate/v1/{secret}/truefoundry'",
                 request=req,
                 response=httpx.Response(401, request=req),
             )
@@ -205,25 +209,20 @@ def test_onyx_http_error_502_does_not_leak_api_key(
 @pytest.mark.parametrize(
     "onyx_body,detail_substr",
     [
-        ({}, "missing action"),
-        ({"action": None}, "missing action"),
-        ({"action": ""}, "missing action"),
-        ({"action": "   "}, "missing action"),
-        ({"action": "warn"}, "unrecognized action"),
+        ({}, "missing boolean verdict"),
+        ({"verdict": None}, "missing boolean verdict"),
+        ({"verdict": "allow"}, "missing boolean verdict"),
+        ({"message": "x"}, "missing boolean verdict"),
     ],
 )
-def test_onyx_200_without_usable_action_returns_502(
+def test_onyx_200_without_usable_verdict_returns_502(
     client: TestClient,
     auth: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
     onyx_body: dict,
     detail_substr: str,
 ) -> None:
-    """HTTP 200 without allow|block|modify must be a 5xx, not verdict:true.
-
-    Regression: evaluate() used to substitute action=allow on missing/empty
-    action, which skipped policy instead of surfacing Fail-on-error.
-    """
+    """HTTP 200 without a boolean verdict must be a 5xx, not a silent allow."""
     import httpx
 
     monkeypatch.setenv("ONYX_API_KEY", "test-policy-token")
@@ -251,38 +250,31 @@ def test_onyx_200_without_usable_action_returns_502(
 
 
 # ---------------------------------------------------------------------------
-# Rail verdicts (require a live Onyx AI Guard /simple call)
+# Live /truefoundry verdicts (require ONYX_API_KEY + ONYX_API_BASE)
 # ---------------------------------------------------------------------------
 
-# Onyx integration-guide phrases: safe prompt allows; fightclub/bradpitt/norton blocks.
-_SAFE_PROMPT = "What is the capital of France?"
-_BLOCK_PROMPT = "fightclub bradpitt norton"
+_SAFE_PROMPT = "What is the weather today?"
+# Test each keyword separately (Onyx TrueFoundry integration guide).
+_BLOCK_KEYWORDS = ("bradpitt", "fightclub", "norton")
 
 
 @requires_onyx
 def test_benign_input_passes(client: TestClient, auth: dict[str, str]) -> None:
-    r = client.post(
-        "/onyx-input",
-        headers=auth,
-        json=_input_body(_SAFE_PROMPT),
-    )
+    r = client.post("/onyx-input", headers=auth, json=_input_body(_SAFE_PROMPT))
     assert r.status_code == 200, r.text
     assert r.json()["verdict"] is True
 
 
+@pytest.mark.parametrize("keyword", _BLOCK_KEYWORDS)
 @requires_onyx
-def test_policy_violation_input_blocks(client: TestClient, auth: dict[str, str]) -> None:
-    # Direction-dependent: the Onyx test policy only has an Input-direction rule.
-    # {"user_prompt": "...fightclub"} → action:block; same text as {"response": ...} → allow.
-    r = client.post(
-        "/onyx-input",
-        headers=auth,
-        json=_input_body(_BLOCK_PROMPT),
-    )
+def test_policy_violation_input_blocks(
+    client: TestClient, auth: dict[str, str], keyword: str
+) -> None:
+    r = client.post("/onyx-input", headers=auth, json=_input_body(keyword))
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["verdict"] is False
-    assert "Onyx AI Guard" in body["message"]
+    assert body.get("message")
 
 
 @requires_onyx
@@ -290,23 +282,30 @@ def test_benign_output_passes(client: TestClient, auth: dict[str, str]) -> None:
     r = client.post(
         "/onyx-output",
         headers=auth,
-        json=_output_body("The capital of France is Paris."),
+        json=_output_body("The weather is sunny today."),
     )
     assert r.status_code == 200, r.text
     assert r.json()["verdict"] is True
 
 
-@pytest.mark.skip(
-    reason="test policy has no Output-direction rule; output blocking needs an Output rule added in Onyx"
-)
+@pytest.mark.parametrize("keyword", _BLOCK_KEYWORDS)
 @requires_onyx
-def test_policy_violation_output_blocks(client: TestClient, auth: dict[str, str]) -> None:
+def test_policy_violation_output_blocks(
+    client: TestClient, auth: dict[str, str], keyword: str
+) -> None:
+    # Keep the blocked keyword out of the input so only output evaluation fires.
     r = client.post(
         "/onyx-output",
         headers=auth,
-        json=_output_body(_BLOCK_PROMPT),
+        json=_output_body(
+            keyword,
+            user_msg=(
+                "Reply with only these letters joined together, without spaces: "
+                + " ".join(keyword)
+            ),
+        ),
     )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["verdict"] is False
-    assert "Onyx AI Guard" in body["message"]
+    assert body.get("message")

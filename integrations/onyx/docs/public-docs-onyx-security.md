@@ -1,30 +1,26 @@
 # Onyx Security
 
-> Onyx AI Guard on TrueFoundry AI Gateway via a deployable FastAPI wrapper.
+> Onyx AI Guard on TrueFoundry AI Gateway via the dedicated `/truefoundry` evaluate endpoint.
 
-Deploy the `integrations/onyx` FastAPI wrapper on any public HTTPS host. The AI Gateway calls it at `llm_input` / `llm_output` via the Custom Guardrail contract; the wrapper forwards extracted text to Onyx AI Guard `/simple` and returns `verdict` JSON on HTTP 200.
+Point Custom Guardrails **directly** at Onyx. No adapter or FastAPI wrapper is required — Onyx speaks the TrueFoundry custom-guardrail contract natively.
 
 ## What is Onyx Security?
 
-Onyx AI Guard is a SaaS platform for evaluating LLM prompts and responses against policies you configure in the Onyx console. You define Input- and Output-direction rules there; the wrapper does not embed policy logic.
-
-This integration uses Onyx's `/simple` evaluate API:
-
-| Onyx API | Purpose | Gateway operation |
-|---|---|---|
-| `POST .../guard/evaluate/v1/{policy-token}/simple` | Score prompt or response; return `allow` / `block` / `modify` | Validate |
-
-Auth to Onyx is the **policy token in the URL path** (`ONYX_API_KEY`) — there is no `Authorization` header on the Onyx call. The wrapper sends extracted text only: `{"user_prompt": "..."}` on input hooks and `{"response": "..."}` on output hooks (never both, never the whole gateway body).
-
-v1 is validate-only. When Onyx returns `action: modify`, these rails block instead of rewriting content.
+Onyx AI Guard evaluates LLM prompts and responses against policies you configure in the Onyx console (prompt protection, content moderation, keywords, sensitive data, and more). TrueFoundry calls Onyx on the `llm_input` and `llm_output` hooks and enforces the returned `verdict`.
 
 ## How it works
 
-1. The AI Gateway POSTs an OpenAI-shaped `requestBody` (input) or `requestBody` + `responseBody` (output) to your wrapper URL.
-2. The wrapper extracts user/assistant text and calls Onyx `/simple` with your `ONYX_API_KEY` embedded in the evaluate URL.
-3. The wrapper returns HTTP 200 with a policy outcome in the body (see below). Infrastructure failures return HTTP 5xx.
+1. Build the evaluate URL from your AI Guard policy:
 
-Onyx policy decisions are always HTTP 200 with an `action` field. `allow` becomes `{"verdict": true}`; `block` and `modify` become `{"verdict": false, "message": "..."}` (block copy comes from Onyx's `custom_popup_message`). Whether output blocking fires depends on your Onyx policy having an Output-direction rule.
+   ```
+   https://<routing-id>.ai-guard.onyx.security/guard/evaluate/v1/<guard-token>/truefoundry
+   ```
+
+   The Guard Token in the path is the auth to Onyx (leave Auth Data empty in the dashboard). Use your tenant hostname — bare `https://ai-guard.onyx.security` is not routed and returns 404.
+
+2. Register two Custom Guardrail configs (input + output) that both use that same URL.
+3. TrueFoundry POSTs its standard custom-guardrail body. Presence of `responseBody` selects output evaluation.
+4. Onyx returns HTTP 200 with `{"verdict": true}` or `{"verdict": false, "message": "..."}`. Mask/ask map to a block verdict on this Validate integration.
 
 ## Response contract
 
@@ -32,105 +28,38 @@ Onyx policy decisions are always HTTP 200 with an `action` field. `allow` become
 |---|---|---|
 | `200` | `{"verdict": true}` | Allow |
 | `200` | `{"verdict": false, "message": "..."}` | Block (policy) |
-| `5xx` | error JSON | Wrapper or Onyx failure |
 
-Policy blocks must use 2xx + `verdict: false`, not HTTP 4xx. See [Custom guardrail response contract](https://www.truefoundry.com/docs/ai-gateway/custom-guardrail-response-contract).
-
-## Wrapper endpoints
-
-| Path | Operation | Target |
-|---|---|---|
-| `/onyx-input` | Validate | Request (input) |
-| `/onyx-output` | Validate | Response (output) |
-
-`GET /health` — health check. `GET /debug/loaded-config` — bearer-gated deploy verification.
-
-All POST routes expect `Authorization: Bearer <WRAPPER_API_KEY>` when the key is configured on the wrapper.
+Set **Enforcing Strategy** to Enforce or Enforce But Ignore On Error for block testing. Audit logs violations without blocking. Streamed responses skip output guardrails — use `"stream": false` when verifying output.
 
 ## Prerequisites
 
-- Onyx policy token from the [Onyx Security](https://onyx.security) platform, plus Input / Output rules configured for your policies.
-- Public HTTPS URL for the deployed wrapper.
-- `WRAPPER_API_KEY` — shared secret; the AI Gateway sends it as `Authorization: Bearer …` when calling the wrapper.
+- TrueFoundry AI Gateway that honors `verdict: false` on HTTP 200.
+- An Onyx AI Guard policy with at least one **Block** rule that scans Input and/or Output.
+- Outbound HTTPS from the gateway to your tenant AI Guard host.
 
 ## Setup
 
-## Clone and configure
+### 1. Get your Guard Token
 
-```bash
-git clone https://github.com/truefoundry/integrations-custom-guardrails
-cd integrations-custom-guardrails/integrations/onyx
-cp .env.example .env
-```
+In Onyx: **Policies → Runtime Policies → AI Guard → ⋮ → AI Guard URL**. Copy the Guard Token and the tenant hostname. This is not an MCP Gateway Token or an API Keys page credential.
 
-```bash
-ONYX_API_KEY=<from https://onyx.security>
-ONYX_API_BASE=https://<routing-id>.ai-guard.onyx.security
-WRAPPER_API_KEY=<generate: python -c "import secrets; print(secrets.token_urlsafe(32))">
-```
+### 2. Register Custom Guardrail configs
 
-Get `ONYX_API_KEY` in the Onyx platform. Set `ONYX_API_BASE` to your tenant's AI Guard host (`https://<routing-id>.ai-guard.onyx.security`). The bare host `https://ai-guard.onyx.security` is not routed to any tenant and returns 404.
+AI Gateway → Guardrails → New Guardrails Group → Custom → group name `onyx-security`.
 
-## Deploy the wrapper
+| Field | Input config | Output config |
+|---|---|---|
+| Name | `onyx-input` | `onyx-output` |
+| Operation | Validate | Validate |
+| Target | Request | Response |
+| URL | Full `/truefoundry` URL above | Same |
+| Auth Data | None (token is in the URL path) | Same |
+| Enforcing Strategy | Enforce But Ignore On Error | Same |
+| Config | `{}` | `{}` |
 
-Docker:
+### 3. Attach to traffic
 
-```bash
-docker build -t onyx-guardrails-tfy .
-docker run --rm -p 8000:8000 --env-file .env onyx-guardrails-tfy
-```
-
-Local:
-
-```bash
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-Put TLS in front of the service (load balancer, ingress, or your platform’s HTTPS URL). The AI Gateway must reach paths such as `https://<host>/onyx-input`.
-
-## Deploy on TrueFoundry (optional)
-
-Set `TFY_WORKSPACE_FQN`, `TFY_PUBLIC_HOST`, `TFY_PUBLIC_PATH`, and secret FQNs in `.env`. Create secrets `onyx-api-key` and `wrapper-api-key` under group `onyx-guardrails-tfy` in Platform → Secrets, then:
-
-```bash
-pip install -U truefoundry
-tfy login
-python deploy.py --wait
-```
-
-## Register Custom Guardrail configs
-
-AI Gateway → Guardrails → + Add New Guardrails Group → type Custom.
-
-- Group name: `onyx-security`
-- Add one config per wrapper path (two total), or start with input validate only.
-
-Input validate example:
-
-| Field | Value |
-|---|---|
-| Name | `onyx-input` |
-| Operation | Validate |
-| Target | Request |
-| Enforcing Strategy | Enforce |
-| URL | `https://<host>/onyx-input` |
-| Headers | `Authorization` → `Bearer <WRAPPER_API_KEY>` |
-| Config | `{}` |
-
-Register the remaining config:
-
-| Name (example) | Operation | Target | Path |
-|---|---|---|---|
-| `onyx-output` | Validate | Response | `/onyx-output` |
-
-Auth Data → Custom Bearer Auth works the same as Headers if you prefer not to set headers manually.
-
-## Attach to traffic
-
-Model pin: AI Gateway → Models → \<model\> → Guardrails → attach group `onyx-security`.
-
-Per request — `X-TFY-GUARDRAILS` header, selector format `<group>/<config>`:
+Model pin, gateway policy, or per-request header:
 
 ```json
 {
@@ -141,42 +70,55 @@ Per request — `X-TFY-GUARDRAILS` header, selector format `<group>/<config>`:
 
 ## Verify
 
-Call the wrapper directly:
+**Input.** Send each blocked keyword as the user message in a separate request (`bradpitt`, `fightclub`, `norton` on the Onyx test policy). Expect HTTP 400 with `error.type: guardrail_checks_failed` under Enforce / Enforce But Ignore On Error.
+
+**Output.** Attach `onyx-output`, set `"stream": false`, and keep the keyword out of the input. For example ask the model to join spaced letters so the assistant produces `bradpitt`. Expect the response to be blocked. Repeat for `fightclub` and `norton`.
+
+Confirm the violation in Onyx Runtime Alerts and the guardrail result in TrueFoundry Request Traces.
+
+Direct curl against Onyx (same body the gateway sends). Include `subjectSlug` on
+`context.user` — without it Onyx returns `verdict: false` with
+`"Onyx AI Guard could not validate the request"`:
 
 ```bash
-curl -sS https://<host>/onyx-input \
-  -H "Authorization: Bearer $WRAPPER_API_KEY" \
+curl -sS -X POST \
+  "https://<routing-id>.ai-guard.onyx.security/guard/evaluate/v1/<guard-token>/truefoundry" \
   -H "Content-Type: application/json" \
   -d '{
-    "requestBody": {"messages": [{"role": "user", "content": "What is the capital of France?"}]},
-    "context": {"user": {"subjectSlug": "test-user"}}
+    "requestBody": {"model": "openai/gpt-4o", "stream": false, "messages": [{"role": "user", "content": "What is the weather today?"}]},
+    "context": {"user": {"subjectId": "u1", "subjectType": "user", "subjectSlug": "u1"}},
+    "config": {}
   }'
 ```
 
-Expect `{"verdict": false, ...}` when Onyx blocks, or `{"verdict": true}` when allowed (depends on your Onyx policy).
+## Known limitations
 
-```bash
-curl -sS https://<host>/debug/loaded-config -H "Authorization: Bearer $WRAPPER_API_KEY"
-```
+- **Validate only** — Mask rules return a block verdict instead of redacting content.
+- **No streamed output guarding** — set `"stream": false` for response checks.
+- **Direction matters** — Input-only rules do not block responses; enable Output scanning on the rule.
+- **Text only** — latest user message (input) / first assistant message (output); tool/image rules have nothing to evaluate on this path.
 
-Confirm `onyx_api_key_configured: true`, `onyx_api_base_configured: true`, and the `routes` map.
+## Optional local forwarder
+
+`integrations/onyx/` also ships a small FastAPI forwarder that POSTs the same TrueFoundry body to `/truefoundry`. Production should call Onyx directly. Use the forwarder only for local smoke tests (`pytest -v tests/` with `ONYX_API_KEY` + `ONYX_API_BASE` set).
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| `401` from wrapper | `WRAPPER_API_KEY` on the service does not match the dashboard Bearer token |
-| `500` "Onyx API key not configured" | Missing `ONYX_API_KEY` and no `config.credentials.apiKey` override |
-| `500` "Onyx API base not configured" | Missing `ONYX_API_BASE` and no `config.api_base` override |
-| Input blocks but output allows the same phrase | Onyx policy has an Input rule only; add an Output-direction rule |
-| `modify` content still blocked | Validate rails fail-safe; masking needs a future Mutate rail |
-| Gateway allows despite `verdict: false` | Tenant gateway not honoring verdict-on-200; set Enforce or upgrade gateway |
+| Traffic not guarded | Group not attached; or strategy is Audit |
+| Guardrail non-200 | Wrong tenant host, wrong Guard Token path segment, or policy inactive |
+| `verdict: false` with "could not validate the request" | Missing `context.user.subjectSlug` (required by `/truefoundry`) |
+| Input blocks but output allows | Output config missing, rule has no Output scan, or `"stream": true` |
+| Mask content blocked instead of redacted | Expected on Validate — see Known limitations |
+| Gateway allows despite `verdict: false` | Use Enforce / Enforce But Ignore On Error; confirm gateway supports verdict-on-200 |
 
 ## Reference
 
 | Item | Value |
 |---|---|
 | Source repo | `truefoundry/integrations-custom-guardrails/integrations/onyx` |
-| Onyx platform | [onyx.security](https://onyx.security) (policy token) |
-| Onyx API base | `https://<routing-id>.ai-guard.onyx.security` (required; bare `ai-guard.onyx.security` 404s) |
+| Onyx platform | [onyx.security](https://onyx.security) |
+| Evaluate path | `/guard/evaluate/v1/<guard-token>/truefoundry` |
+| API base | `https://<routing-id>.ai-guard.onyx.security` |
 | Selector | `onyx-security/<config-name>` |
