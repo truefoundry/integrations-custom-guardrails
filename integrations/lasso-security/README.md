@@ -45,6 +45,22 @@ Four rails mapping to Lasso API v3:
 
 Policy deputies and BLOCK/WARN thresholds are configured in the Lasso console. The wrapper only forwards messages and maps findings to verdicts.
 
+## Agent identity (optional)
+
+All four rails can tag their Lasso calls with the agent that produced the inference. Both fields are optional, independent, and attribution-only — they never change a verdict.
+
+Resolution order, most specific first:
+
+| Source | Keys | Scope |
+|---|---|---|
+| Gateway `context.metadata` | `agent_id` / `agentId` / `lasso-agent-id`, `agent_name` / `agentName` / `lasso-agent-name` | Per request |
+| Dashboard Config JSON | `agentId`, `agentName` | Per guardrail config |
+| Deploy env | `LASSO_AGENT_ID`, `LASSO_AGENT_NAME` | Service-wide default |
+
+Per-request metadata beats a configured default, which beats the deploy env.
+
+Lasso rejects the whole classify call with HTTP 400 when a value is blank, over 128 characters, or contains Unicode control/format characters. Since a rejected call means no scanning at all, the wrapper trims each value and drops an unusable one instead of forwarding it.
+
 ## Repo layout
 
 ```

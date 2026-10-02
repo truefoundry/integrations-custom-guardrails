@@ -1,6 +1,7 @@
 import copy
 import logging
 import os
+import unicodedata
 import uuid
 from typing import Any, Optional
 
@@ -23,6 +24,12 @@ DEFAULT_TIMEOUT = 10.0
 # Other actions (e.g. ADMIN_ALERT / USER_ALERT) carry span metadata but the
 # policy intent is to alert, not redact — so we do not mask them.
 _MASKING_ACTIONS = frozenset({"AUTO_MASKING"})
+
+# Lasso rejects agentId / agentName over this length with HTTP 400.
+AGENT_IDENTITY_MAX_LENGTH = 128
+
+# Unicode general categories Lasso rejects in agentId / agentName (control, format).
+_AGENT_IDENTITY_BANNED_CATEGORIES = ("Cc", "Cf")
 
 
 INVALID_API_KEY_MESSAGE = (
@@ -174,6 +181,68 @@ def _resolve_user_id(request: InputGuardrailRequest | OutputGuardrailRequest) ->
     return None
 
 
+def _sanitize_agent_identity(value: Any) -> Optional[str]:
+    """Return a Lasso-acceptable agent identity, or None when the value is unusable.
+
+    Lasso rejects the whole classify/classifix request with HTTP 400 when
+    agentId / agentName is blank, longer than AGENT_IDENTITY_MAX_LENGTH, or
+    contains Unicode control/format characters. A rejected request means no
+    scanning at all, so drop an unusable value rather than forwarding it.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or len(text) > AGENT_IDENTITY_MAX_LENGTH:
+        return None
+    if any(unicodedata.category(char) in _AGENT_IDENTITY_BANNED_CATEGORIES for char in text):
+        return None
+    return text
+
+
+def _resolve_agent_identity(
+    request: InputGuardrailRequest | OutputGuardrailRequest,
+    *,
+    config_key: str,
+    metadata_keys: tuple[str, ...],
+    env_var: str,
+) -> Optional[str]:
+    """First usable identity from gateway metadata, then Config JSON, then deploy env.
+
+    Per-request beats operator-static: a caller that names its agent on the
+    request must win over a default configured on the guardrail or the service.
+    Note this is deliberately the reverse of _resolve_session_id /
+    _resolve_user_id, which read config first — see docs/DESIGN.md.
+    """
+    metadata = request.context.metadata or {}
+    candidates: list[Any] = [metadata.get(key) for key in metadata_keys]
+    candidates.append(_get_config_value(request.config, config_key))
+    candidates.append(os.getenv(env_var))
+
+    for candidate in candidates:
+        sanitized = _sanitize_agent_identity(candidate)
+        if sanitized:
+            return sanitized
+    return None
+
+
+def _resolve_agent_id(request: InputGuardrailRequest | OutputGuardrailRequest) -> Optional[str]:
+    return _resolve_agent_identity(
+        request,
+        config_key="agentId",
+        metadata_keys=("agent_id", "agentId", "lasso-agent-id"),
+        env_var="LASSO_AGENT_ID",
+    )
+
+
+def _resolve_agent_name(request: InputGuardrailRequest | OutputGuardrailRequest) -> Optional[str]:
+    return _resolve_agent_identity(
+        request,
+        config_key="agentName",
+        metadata_keys=("agent_name", "agentName", "lasso-agent-name"),
+        env_var="LASSO_AGENT_NAME",
+    )
+
+
 def _extract_messages_from_request_body(body: dict[str, Any]) -> list[dict[str, str]]:
     messages = body.get("messages", [])
     result: list[dict[str, str]] = []
@@ -201,6 +270,8 @@ def _build_lasso_payload(
     session_id: str,
     user_id: Optional[str],
     tools: list[Any],
+    agent_id: Optional[str] = None,
+    agent_name: Optional[str] = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "messages": messages,
@@ -210,6 +281,11 @@ def _build_lasso_payload(
     }
     if user_id:
         payload["userId"] = user_id
+    # Optional attribution only — Lasso never changes a verdict on these.
+    if agent_id:
+        payload["agentId"] = agent_id
+    if agent_name:
+        payload["agentName"] = agent_name
     return payload
 
 
@@ -403,7 +479,15 @@ def _invoke_lasso(
     if isinstance(request, InputGuardrailRequest):
         tools = request.requestBody.get("tools") or []
 
-    payload = _build_lasso_payload(messages, message_type, session_id, user_id, tools)
+    payload = _build_lasso_payload(
+        messages,
+        message_type,
+        session_id,
+        user_id,
+        tools,
+        agent_id=_resolve_agent_id(request),
+        agent_name=_resolve_agent_name(request),
+    )
     return _call_lasso(
         endpoint=endpoint,
         payload=payload,

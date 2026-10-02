@@ -10,6 +10,7 @@ Use [Lasso Security](https://server.lasso.security) as an input and output guard
 - **Mutate rails** (`classifix`) — redact PII in place when Lasso returns mask spans or rewritten messages; still block when a violation cannot be masked.
 - **Input and output** — separate endpoints for pre-call and post-call hooks.
 - **Session continuity** — optional `sessionId` / `userId` forwarded to Lasso for conversation-aware policy.
+- **Agent attribution** — optional `agentId` / `agentName` so Lasso can report findings per agent.
 
 Deputy behavior (what triggers BLOCK vs WARN vs mask) is defined in your Lasso account, not in this repo.
 
@@ -105,6 +106,27 @@ For each config:
 
 Save the group.
 
+### Optional: tag calls with an agent identity
+
+If you run more than one agent behind the gateway, tell Lasso which one produced each inference so findings can be attributed. Both fields are optional and independent, and neither changes a verdict.
+
+Set a service-wide default in `.env` before deploying:
+
+```
+LASSO_AGENT_ID=support-bot-prod
+LASSO_AGENT_NAME=Support Bot
+```
+
+Override for a single guardrail config with the Config JSON field:
+
+```json
+{"agentId": "support-bot-prod", "agentName": "Support Bot"}
+```
+
+Override per request by setting `agent_id` / `agent_name` (or `lasso-agent-id` / `lasso-agent-name`) in the gateway's request metadata. Per-request metadata wins over the Config JSON value, which wins over the deploy env — most specific source first.
+
+Keep each value under 128 characters with no control characters — Lasso rejects the call otherwise. The wrapper trims values and drops an invalid one rather than losing the scan, so a missing `agentId` in the Lasso console usually means the value was malformed.
+
 ### About Fail on error
 
 With gateway commit `a1c551be` or later, rail blocks are `HTTP 200` + `verdict: false`. Real wrapper or Lasso outages return 5xx. **`Fail on error: false`** lets the gateway distinguish "policy blocked" from "guardrail unavailable." Use `true` only when you want transient Lasso outages to fail closed.
@@ -177,6 +199,7 @@ Only findings with `action: BLOCK` deny on validate rails. `WARN`-only findings 
 |---|---|
 | Default Lasso API base | `https://server.lasso.security/gateway/v3` |
 | Wrapper service name | `lasso-guardrails-tfy` |
+| Agent identity limit | 128 characters, no control characters |
 | Debug endpoint | `GET /debug/runtime-config` (bearer auth) |
 | Selector format | `lasso-security/lasso-classify-input`, etc. |
 | Repo | [`truefoundry/integrations-custom-guardrails/integrations/lasso-security/`](https://github.com/truefoundry/integrations-custom-guardrails/tree/main/integrations/lasso-security) |

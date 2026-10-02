@@ -78,6 +78,10 @@ WRAPPER_API_KEY_SECRET_FQN = os.environ.get(
 
 LASSO_API_BASE = os.environ.get("LASSO_API_BASE", "https://server.lasso.security/gateway/v3")
 
+# Optional default agent attribution sent to Lasso on every rail call.
+LASSO_AGENT_ID = os.environ.get("LASSO_AGENT_ID", "").strip()
+LASSO_AGENT_NAME = os.environ.get("LASSO_AGENT_NAME", "").strip()
+
 BUILD_REF = _build_ref()
 
 
@@ -90,6 +94,10 @@ def build_service() -> Service:
         "LOG_LEVEL": "info",
         "BUILD_REF": BUILD_REF,
     }
+    if LASSO_AGENT_ID:
+        env["LASSO_AGENT_ID"] = LASSO_AGENT_ID
+    if LASSO_AGENT_NAME:
+        env["LASSO_AGENT_NAME"] = LASSO_AGENT_NAME
     return Service(
         name="lasso-guardrails-tfy",
         image=Build(build_spec=DockerFileBuild(dockerfile_path="./Dockerfile")),
