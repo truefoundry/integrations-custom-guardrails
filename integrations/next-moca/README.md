@@ -29,7 +29,7 @@ For every message with `role: "tool"` in `requestBody.messages`:
 
 Each tool result is handled on its own: when one call fails and another returns a delivery, the delivery is applied and the failed one keeps its original text. A screened delivery is never discarded because a different call failed.
 
-System, user and assistant messages, `tool_call_id`, and every other field of the request body (`model`, `stream`, `tools`, sampling parameters) are returned unchanged. Requests without tool messages, or without a user message, make no call.
+System, user and assistant messages, `tool_call_id`, and every other field of the request body (`model`, `stream`, `tools`, sampling parameters) are returned unchanged. When the latest user message mixes text with images or other parts, its text parts form `task.prompt`. A tool message whose content includes a non-text part is left unchanged, since replacing it would drop that part. Requests without tool messages, or whose latest user message has no non-whitespace text, make no call.
 
 Fail open: a tool result whose call fails, times out or returns no delivery keeps its original text, and when no tool result received a delivery (or the wrapper itself hits an error) the response is `{"verdict": true, "transformed": false, "result": <original requestBody>}`, so the request continues unchanged.
 
@@ -98,7 +98,7 @@ cp .env.example .env   # self-hosted: fill in NEXT_MOCA_API_KEY and WRAPPER_API_
 .venv/bin/pytest -v tests/
 ```
 
-The suite runs a fake Next Moca API (respx) behind the real HTTP client and covers: tool messages replaced on `engaged` and `sanitized_fallback`; `blocked` applied as rendered; passthrough on stand-down outcomes, empty renders, 4xx and 5xx, timeouts, connection errors and malformed bodies; no call under `min_tokens`, without tool messages, without a user message or without a key; the forwarded key used as the bearer, the service key used only in self-hosted mode, and the forwarded key absent from every log record, response and error; `verdict` always true; `validate_only` never transforming. One live test against the hosted API runs when `NEXT_MOCA_LIVE_API_KEY` is set.
+The suite runs a fake Next Moca API (respx) behind the real HTTP client and covers: tool messages replaced on `engaged` and `sanitized_fallback`; `blocked` applied as rendered; passthrough on stand-down outcomes, empty renders, 4xx and 5xx, timeouts, connection errors and malformed bodies; no call under `min_tokens`, without tool messages, without user text or without a key; the task taken from the text parts of a text-and-image user message; the forwarded key used as the bearer, the service key used only in self-hosted mode, and the forwarded key absent from every log record, response and error; `verdict` always true; `validate_only` never transforming. One live test against the hosted API runs when `NEXT_MOCA_LIVE_API_KEY` is set.
 
 ## Example
 

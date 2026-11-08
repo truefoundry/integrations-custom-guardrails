@@ -282,6 +282,65 @@ def test_task_is_the_latest_user_message(client: TestClient) -> None:
 
 
 @respx.mock
+def test_task_from_text_and_image_user_message(client: TestClient) -> None:
+    route = respx.post(FAKE_URL).mock(side_effect=_reply("selected", "engaged"))
+    body = _body(BIG)
+    body["messages"][1]["content"] = [
+        {"type": "text", "text": "What does this screenshot say"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        {"type": "text", "text": "about my inbox?"},
+    ]
+    out = _post(client, body)
+    assert route.called
+    assert json.loads(route.calls.last.request.content)["task"]["prompt"] == (
+        "What does this screenshot say\nabout my inbox?"
+    )
+    assert out["result"]["messages"][-1]["content"] == "selected"
+    assert out["result"]["messages"][1] == body["messages"][1]
+
+
+IMG = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+
+
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        ("", None),
+        ("  \t\n", None),
+        (None, None),
+        ([], None),
+        ([{"type": "text", "text": ""}, IMG], None),
+        ([IMG, {"type": "text", "text": "  "}], None),
+        ([None, 7, {"type": "text", "text": "ask"}, ["nested"]], "ask"),
+        ([{"type": "text", "text": "ask"}, {"type": "text", "text": None}], "ask"),
+    ],
+)
+def test_latest_user_prompt_edge_cases(content: Any, expected: str | None) -> None:
+    from guardrail.select_input import latest_user_prompt
+
+    older = {"role": "user", "content": "older question"}
+    assert latest_user_prompt([older, {"role": "user", "content": content}]) == expected
+
+
+@respx.mock
+def test_image_only_user_message_makes_no_call(client: TestClient) -> None:
+    route = respx.post(FAKE_URL).mock(side_effect=_reply("x", "engaged"))
+    body = _body(BIG)
+    body["messages"][1]["content"] = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
+    _assert_passthrough(_post(client, body), body)
+    assert not route.called
+
+
+@respx.mock
+def test_mixed_tool_content_is_left_unchanged(client: TestClient) -> None:
+    route = respx.post(FAKE_URL).mock(side_effect=_reply("x", "engaged"))
+    content = [{"type": "text", "text": BIG}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
+    body = _body(content)
+    _assert_passthrough(_post(client, body), body)
+    assert not route.called
+
+
+@respx.mock
 def test_config_cannot_supply_key_or_base_url(client: TestClient) -> None:
     route = respx.post(FAKE_URL).mock(side_effect=_reply("x", "engaged"))
     _post(client, _body(BIG), config={"api_key": "attacker", "api_base": "https://evil.test"})

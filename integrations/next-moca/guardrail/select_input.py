@@ -43,11 +43,30 @@ def _text_of(content: Any) -> Optional[str]:
     return None
 
 
+def _prompt_text(content: Any) -> Optional[str]:
+    """Text of a user message: a string, or the text parts of a part list.
+
+    Non-text parts (images, audio, files) are skipped, so a question asked
+    alongside an image still screens the tool results. Tool messages keep the
+    stricter `_text_of`: their content is replaced, and a mixed list cannot be
+    replaced without dropping its non-text parts."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = [
+            p["text"]
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str)
+        ]
+        return "\n".join(texts) if texts else None
+    return None
+
+
 def latest_user_prompt(messages: list[Any]) -> Optional[str]:
-    """Content of the most recent user message, or None when there is none with text."""
+    """Text of the most recent user message, or None when it has no text."""
     for m in reversed(messages):
         if isinstance(m, dict) and m.get("role") == "user":
-            text = _text_of(m.get("content"))
+            text = _prompt_text(m.get("content"))
             if text and text.strip():
                 return text
             return None
