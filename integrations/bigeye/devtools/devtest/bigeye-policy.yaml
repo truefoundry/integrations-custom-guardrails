@@ -1,0 +1,17 @@
+# Runs bigeye/access-decision before every tool call on the stub-sql-mcp server.
+# Omitted conditions (mcpTools, model, subjects) count as a match, so listing only
+# mcpServers covers every tool on that server. Apply with: tfy apply -f bigeye-policy.yaml
+type: gateway-guardrails-config
+name: bigeye-stub-sql
+when:
+  target:
+    operator: or
+    conditions:
+      mcpServers:
+        condition: in
+        values: [stub-sql-mcp]
+llm_input_guardrails: []
+llm_output_guardrails: []
+mcp_tool_pre_invoke_guardrails: [bigeye/access-decision]
+mcp_tool_post_invoke_guardrails: []
+custom_error_message: "Bigeye data governance blocked this query because it touches data flagged as sensitive or with open data-quality issues. Don't retry the same query. Tell the user what data you tried to access and ask how to proceed."
