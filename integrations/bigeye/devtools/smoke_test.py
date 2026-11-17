@@ -6,12 +6,13 @@ a network error or timeout raises instead of retrying.
 
 Usage (from integrations/bigeye):
     .venv/bin/python devtools/smoke_test.py                    # auth check, then TABLE, COLUMN, SQL and SQL+policy
-    .venv/bin/python devtools/smoke_test.py --list [--scheme bearer]   # stored decisions for agent truefoundry-gateway
+    .venv/bin/python devtools/smoke_test.py --list [--scheme bearer]   # stored decisions for the smoke-test agent
     .venv/bin/python devtools/smoke_test.py --snake            # same decisions with snake_case request keys
 
 Required env: BIGEYE_URL, BIGEYE_API_KEY, BIGEYE_WORKSPACE_ID, BIGEYE_SOURCE_NAME,
 BIGEYE_CLEAN_TABLE, BIGEYE_FLAGGED_COLUMN, BIGEYE_TEST_SQL.
-Optional: BIGEYE_WAREHOUSE_TYPE, BIGEYE_ALLOWED_HOSTS (same allowlist as the wrapper).
+Optional: BIGEYE_WAREHOUSE_TYPE, BIGEYE_ALLOWED_HOSTS (same allowlist as the wrapper),
+BIGEYE_SMOKE_AGENT_ID (default truefoundry-smoke-test, kept apart from the gateway's agent).
 """
 
 from __future__ import annotations
@@ -45,7 +46,8 @@ REQUIRED_ENV = (
     "BIGEYE_FLAGGED_COLUMN",
     "BIGEYE_TEST_SQL",
 )
-AGENT_ID = "truefoundry-gateway"
+AGENT_ID_ENV = "BIGEYE_SMOKE_AGENT_ID"
+DEFAULT_AGENT_ID = "truefoundry-smoke-test"
 OPERATION = "smoke_test"
 SMOKE_USER = {"subjectType": "user", "subjectSlug": "bigeye-smoke-test"}
 AUTH_SCHEMES = ("apikey", "bearer")  # apikey first: it wins when both are accepted
@@ -66,6 +68,7 @@ def load_env() -> dict:
     if missing:
         sys.exit(f"Missing env vars: {', '.join(missing)} (set them in integrations/bigeye/.env)")
     env = {k: os.environ[k].strip() for k in REQUIRED_ENV}
+    env[AGENT_ID_ENV] = os.environ.get(AGENT_ID_ENV, "").strip() or DEFAULT_AGENT_ID
     _secrets.append(env["BIGEYE_API_KEY"])
     return env
 
@@ -87,7 +90,7 @@ def settings_for(env: dict, scheme: str, evaluate_policy: bool = False) -> Bigey
                 "warehouse_type": os.environ.get("BIGEYE_WAREHOUSE_TYPE") or None,
                 "evaluate_policy": evaluate_policy,
                 "bigeye_timeout_ms": REQUEST_TIMEOUT_MS,
-                "agent_id": AGENT_ID,
+                "agent_id": env[AGENT_ID_ENV],
                 "operation": OPERATION,
             }
         )
@@ -191,8 +194,9 @@ def _find(record: dict, *keys: str) -> Optional[object]:
 
 def list_decisions(http: httpx.Client, env: dict, scheme: str) -> None:
     settings = settings_for(env, scheme)
-    body = {"workspaceId": int(env["BIGEYE_WORKSPACE_ID"]), "agentExternalId": AGENT_ID}
-    print(f"3. Stored decisions for agent {AGENT_ID} (auth_scheme={scheme})")
+    agent_id = env[AGENT_ID_ENV]
+    body = {"workspaceId": int(env["BIGEYE_WORKSPACE_ID"]), "agentExternalId": agent_id}
+    print(f"3. Stored decisions for agent {agent_id} (auth_scheme={scheme})")
     response, latency_ms = timed(
         http.post, settings.base_url + LIST_PATH, json=body, headers=auth_headers(settings, env["BIGEYE_API_KEY"])
     )
@@ -214,7 +218,7 @@ def list_decisions(http: httpx.Client, env: dict, scheme: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--list", action="store_true", help=f"list stored decisions for agent {AGENT_ID}")
+    parser.add_argument("--list", action="store_true", help=f"list stored decisions for the {AGENT_ID_ENV} agent")
     parser.add_argument("--scheme", choices=AUTH_SCHEMES, default="apikey", help="auth scheme for --list")
     parser.add_argument("--snake", action="store_true", help="send snake_case request keys (diagnostic)")
     args = parser.parse_args()

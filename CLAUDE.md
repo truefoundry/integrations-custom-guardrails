@@ -20,6 +20,7 @@ tfy-custom-guardrails/
     ├── _template/                               Skeleton for new integrations
     ├── nemo/                                    NVIDIA NeMo Guardrails (example: LLM-judged)
     ├── guardrails-ai/                           Guardrails AI Hub validators (example: heuristic)
+    ├── bigeye/                                  Bigeye Access Decision API (example: SaaS validate, MCP tool pre-invoke)
     └── lasso-security/                          Lasso Security API v3 (example: SaaS validate + mutate)
 ```
 
@@ -136,6 +137,24 @@ Vendor gotchas:
 - **Validate verdict**: only `action: BLOCK` findings block; `WARN`-only violations pass through.
 - **Mutate path**: classifix applies Lasso-returned masked messages or span masks from findings; BLOCK findings without mask metadata still deny even on mutate rails.
 - **Debug endpoint** is `/debug/runtime-config` (not `/debug/loaded-config`).
+
+### Bigeye (`integrations/bigeye/`)
+
+One MCP tool pre-invoke rail that asks Bigeye's Access Decision API whether a tool call may touch the warehouse data it names (SQL, tables and columns in the tool arguments). Validate only; blocks on Bigeye `DENY` or `REQUIRE_CONFIRMATION` by default. One SaaS round-trip per call; default timeout 3.5s.
+
+- **Endpoints**: `/health`, `/debug/loaded-config`, `POST /mcp-pre-invoke`
+- **Hook**: `mcp_tool_pre_invoke_guardrails`, scoped by a policy `mcpServers` condition (`<server>` or `<server>:<tool>`)
+- **Tests**: 209/209 pytest with Bigeye mocked; `devtools/smoke_test.py` and `devtools/local_wrapper_check.py` run against live Bigeye without a TFY tenant
+- **Deploy**: `cd integrations/bigeye && .venv/bin/python deploy.py --wait`
+- **Repo docs**: `integrations/bigeye/README.md`; gateway YAML in `integrations/bigeye/devtools/gateway-examples/`
+
+Vendor gotchas:
+- **Auth**: the guardrail's Bearer token is the Bigeye API key, forwarded as `Authorization: apikey <key>`. A personal API key sent as Bearer gets a Bigeye 500 mentioning base64, not a 401.
+- **proto3 JSON omits default enums**: a missing `accessDecision` is UNSPECIFIED; a missing `overallDecision` is the most severe asset decision.
+- **Argument names are config** (`sql_keys`, `table_keys`, `column_keys`), top level only. Calls with nothing to check are allowed unless `on_nothing_to_check: block`, which belongs only on `<server>:<tool>` policies.
+- **Host allowlist**: `BIGEYE_ALLOWED_HOSTS` (default `*.bigeye.com`), because the wrapper forwards the caller's key to `bigeye_url`.
+- **Never 429 or 503**: the gateway retries those, so Bigeye errors become 502 or 504.
+- **Policy mode** (`evaluate_policy: true`): Bigeye decides from policies only.
 
 ## Reusable skill
 

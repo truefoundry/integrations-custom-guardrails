@@ -6,6 +6,10 @@ server, and prints how many times the Bigeye key appears in that log. Reads BIGE
 from integrations/bigeye/.env. The key is never printed, and the wrapper process is
 started without it, as in production.
 
+Expectations don't depend on what the catalog holds: the SQL case checks that the
+verdict matches block_on for whichever decision Bigeye returns, and the next case
+forces a block by setting block_on to that decision.
+
 Usage (from integrations/bigeye):
     .venv/bin/python devtools/local_wrapper_check.py --scheme apikey [--log wrapper-local.log]
 """
@@ -39,6 +43,9 @@ DEFAULT_KEY_SUFFIX_LEN = 40
 OUTBOUND_MARKER = "HTTP Request:"
 REJECTED_KEY_LOG = "Bigeye rejected the API key"
 MASK = "***"
+UNSPECIFIED = "UNSPECIFIED"
+DECISIONS = ("ALLOW", "WARN", "REQUIRE_CONFIRMATION", "DENY", UNSPECIFIED)
+DEFAULT_BLOCK_ON = ("DENY", "REQUIRE_CONFIRMATION")
 
 
 @dataclass
@@ -73,15 +80,15 @@ def free_port() -> int:
 
 
 def wrapper_env() -> dict:
-    """The wrapper's env: no BIGEYE_* smoke-test values, and an empty key so main.py's load_dotenv can't add it."""
+    """The wrapper's env: no BIGEYE_* smoke-test values, and an empty key so main.py's load_dotenv can't add it.
+
+    BIGEYE_ALLOWED_HOSTS passes through only when set; otherwise the wrapper's default applies.
+    """
     env = {k: v for k, v in os.environ.items() if not k.startswith("BIGEYE_")}
-    env.update(
-        BIGEYE_API_KEY="",
-        BIGEYE_ALLOWED_HOSTS=os.environ.get("BIGEYE_ALLOWED_HOSTS", "app.bigeye.com,demo.bigeye.com"),
-        LOG_PAYLOADS="false",
-        LOG_LEVEL="info",
-        PYTHONUNBUFFERED="1",
-    )
+    env.update(BIGEYE_API_KEY="", LOG_PAYLOADS="false", LOG_LEVEL="info", PYTHONUNBUFFERED="1")
+    allowed_hosts = os.environ.get("BIGEYE_ALLOWED_HOSTS", "").strip()
+    if allowed_hosts:
+        env["BIGEYE_ALLOWED_HOSTS"] = allowed_hosts
     return env
 
 
@@ -114,6 +121,17 @@ def body_of(response: httpx.Response) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def expected_verdict(summary: dict, block_on: tuple) -> bool:
+    """The README's block rule, recomputed from the response summary rather than taken from the wrapper."""
+    if summary.get("overall_decision") in block_on:
+        return False
+    assets = summary.get("assets") if isinstance(summary.get("assets"), list) else []
+    undecided = bool(summary.get("unresolved_count")) or any(
+        isinstance(a, dict) and a.get("decision") == UNSPECIFIED for a in assets
+    )
+    return not (UNSPECIFIED in block_on and undecided)
+
+
 def build_cases(base: str, env: dict, scheme: str) -> list:
     api_key = env["BIGEYE_API_KEY"]
     dashboard = {
@@ -131,6 +149,24 @@ def build_cases(base: str, env: dict, scheme: str) -> list:
     def summary(r: httpx.Response) -> dict:
         return body_of(r).get("bigeye") or {}
 
+    observed: dict = {}
+
+    def remember_decision(send: Callable[[httpx.Client], httpx.Response]) -> Callable[[httpx.Client], httpx.Response]:
+        def wrapped(http: httpx.Client) -> httpx.Response:
+            response = send(http)
+            observed["decision"] = summary(response).get("overall_decision")
+            return response
+
+        return wrapped
+
+    def block_on_observed_decision(http: httpx.Client) -> httpx.Response:
+        decision = observed.get("decision")
+        block_on = [decision] if decision in DECISIONS else []
+        return rail(run_query, {**dashboard, "block_on": block_on})(http)
+
+    def names_observed_decision(r: httpx.Response) -> bool:
+        return str(body_of(r).get("message") or "").startswith(f"Bigeye {observed.get('decision')}")
+
     return [
         Case(
             "GET /health",
@@ -146,21 +182,23 @@ def build_cases(base: str, env: dict, scheme: str) -> list:
         ),
         Case(
             "run_query SQL, default block_on",
-            "200, verdict true, checked true, UNSPECIFIED, assets_found 0",
-            rail(run_query, dashboard),
+            "200, checked true, a known decision, verdict matches the default block_on for that decision",
+            remember_decision(rail(run_query, dashboard)),
             lambda r, log: expect(r.status_code == 200, "status")
-            + expect(body_of(r).get("verdict") is True, "verdict")
             + expect(summary(r).get("checked") is True, "checked")
-            + expect(summary(r).get("overall_decision") == "UNSPECIFIED", "decision")
-            + expect(summary(r).get("assets_found") == 0, "assets_found")
+            + expect(summary(r).get("overall_decision") in DECISIONS, "decision")
+            + expect(isinstance(summary(r).get("assets_found"), int), "assets_found")
+            + expect(body_of(r).get("verdict") is expected_verdict(summary(r), DEFAULT_BLOCK_ON), "verdict matches block_on")
             + expect(OUTBOUND_MARKER in log, "Bigeye was called"),
         ),
         Case(
-            "run_query SQL, UNSPECIFIED in block_on",
-            "200, verdict false",
-            rail(run_query, {**dashboard, "block_on": ["DENY", "REQUIRE_CONFIRMATION", "UNSPECIFIED"]}),
-            lambda r, log: expect(r.status_code == 200, "status")
+            "run_query SQL, block_on = [the decision Bigeye just returned]",
+            "200, verdict false, message names that decision",
+            block_on_observed_decision,
+            lambda r, log: expect(observed.get("decision") in DECISIONS, "decision from the previous case")
+            + expect(r.status_code == 200, "status")
             + expect(body_of(r).get("verdict") is False, "verdict")
+            + expect(names_observed_decision(r), "message")
             + expect(OUTBOUND_MARKER in log, "Bigeye was called"),
         ),
         Case(

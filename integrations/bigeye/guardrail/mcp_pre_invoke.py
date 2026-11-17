@@ -25,12 +25,23 @@ from guardrail._decision import (
 )
 from guardrail._extract import extract_targets
 from guardrail._payload_log import log_payload, payload_logging_enabled
-from guardrail._settings import ConfigError, parse_settings
+from guardrail._settings import BLOCK_UNCHECKED, ConfigError, parse_settings
 from mcp_entities import BigeyeValidateResponse, McpPreInvokeRequest
 
 log = logging.getLogger("bigeye-guardrails-tfy")
 
 NOTHING_TO_CHECK = "no SQL, tables or columns in arguments"
+NOTHING_TO_CHECK_MESSAGE = f"Bigeye could not check this call: {NOTHING_TO_CHECK}"
+
+
+def _nothing_to_check(on_nothing_to_check: str) -> BigeyeValidateResponse:
+    log.warning("bigeye skipped: %s (on_nothing_to_check=%s)", NOTHING_TO_CHECK, on_nothing_to_check)
+    blocked = on_nothing_to_check == BLOCK_UNCHECKED
+    return BigeyeValidateResponse(
+        verdict=not blocked,
+        message=NOTHING_TO_CHECK_MESSAGE if blocked else None,
+        bigeye=unchecked_summary(NOTHING_TO_CHECK),
+    )
 
 
 async def mcp_pre_invoke(
@@ -41,10 +52,9 @@ async def mcp_pre_invoke(
         log_payload(payload.model_dump(exclude_unset=True))
 
     settings = parse_settings(payload.config)
-    targets = extract_targets(payload.requestBody)
+    targets = extract_targets(payload.requestBody, settings.sql_keys, settings.table_keys, settings.column_keys)
     if targets.empty:
-        log.info("bigeye skipped: %s", NOTHING_TO_CHECK)
-        return BigeyeValidateResponse(verdict=True, bigeye=unchecked_summary(NOTHING_TO_CHECK))
+        return _nothing_to_check(settings.on_nothing_to_check)
     if targets.sql and not settings.source_name:
         log.error("tool arguments contain SQL but the guardrail config has no source_name")
         raise ConfigError("source_name is required to check SQL")

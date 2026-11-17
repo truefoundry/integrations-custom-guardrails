@@ -1,7 +1,8 @@
-# Registers the test-only stub as a remote MCP server. Apply with: tfy apply -f stub-mcp-server.yaml
+# Registers an MCP server to test against, here the test-only stub in ../stub-sql-mcp.
+# Apply with: tfy apply -f stub-mcp-server.yaml
 # The guardrail policy matches on this name, so keep the two in sync.
 type: mcp-server/remote
-name: stub-sql-mcp
+name: <mcp-server-name>
 description: Test-only SQL MCP server for the Bigeye guardrail end-to-end test. Returns canned rows.
 url: https://<stub-host>/<stub-path>/mcp
 collaborators:

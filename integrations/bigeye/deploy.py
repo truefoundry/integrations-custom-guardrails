@@ -51,7 +51,7 @@ if _raw_path:
         _raw_path = _raw_path + "/"
 PUBLIC_PATH = _raw_path or None
 
-BIGEYE_ALLOWED_HOSTS = os.environ.get("BIGEYE_ALLOWED_HOSTS", "app.bigeye.com,demo.bigeye.com")
+BIGEYE_ALLOWED_HOSTS = os.environ.get("BIGEYE_ALLOWED_HOSTS", "*.bigeye.com")
 LOG_PAYLOADS = os.environ.get("LOG_PAYLOADS", "false")
 
 
@@ -166,6 +166,7 @@ if __name__ == "__main__":
     print(f"  debug   : {base}/debug/loaded-config")
     print(f"  rail    : {base}/mcp-pre-invoke")
     print(
-        "\nNext: create the guardrail group from devtools/devtest/bigeye-guardrail-group.yaml.\n"
-        "Operation = Validate; Bearer token = the Bigeye API key; enforcing strategy = enforce_but_ignore_on_error."
+        "\nNext: register the guardrail in TrueFoundry (README, \"Register in TrueFoundry\"; example YAML in\n"
+        "devtools/gateway-examples/). Operation = Validate; Bearer token = the Bigeye API key;\n"
+        "enforcing strategy = enforce_but_ignore_on_error."
     )

@@ -1,9 +1,9 @@
 """Pull SQL, table names and column names out of MCP tool arguments.
 
-Keys follow Bigeye's Kong plugin: ``query``/``sql``, ``tables``/``table`` and
-``columns``/``column``. Name values may be a list, a JSON-array string or a
-comma-separated string. Names pass through unchanged; Bigeye resolves them and
-reports partial names as unresolved.
+Only top-level arguments are read, under the names in the config's ``sql_keys``,
+``table_keys`` and ``column_keys``. The first non-empty SQL key wins. Name values
+may be a list, a JSON-array string or a comma-separated string. Names pass through
+unchanged; Bigeye resolves them and reports partial names as unresolved.
 """
 
 from __future__ import annotations
@@ -11,10 +11,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any, Optional
-
-SQL_KEYS = ("query", "sql")
-TABLE_KEYS = ("tables", "table")
-COLUMN_KEYS = ("columns", "column")
 
 
 @dataclass(frozen=True)
@@ -28,8 +24,8 @@ class AccessTargets:
         return not (self.sql or self.tables or self.columns)
 
 
-def _first_sql(arguments: dict) -> Optional[str]:
-    for key in SQL_KEYS:
+def _first_sql(arguments: dict, keys: tuple) -> Optional[str]:
+    for key in keys:
         value = arguments.get(key)
         if isinstance(value, str) and value.strip():
             return value
@@ -58,9 +54,9 @@ def _names(arguments: dict, keys: tuple) -> tuple:
     return tuple(dict.fromkeys(names))
 
 
-def extract_targets(arguments: dict) -> AccessTargets:
+def extract_targets(arguments: dict, sql_keys: tuple, table_keys: tuple, column_keys: tuple) -> AccessTargets:
     return AccessTargets(
-        sql=_first_sql(arguments),
-        tables=_names(arguments, TABLE_KEYS),
-        columns=_names(arguments, COLUMN_KEYS),
+        sql=_first_sql(arguments, sql_keys),
+        tables=_names(arguments, table_keys),
+        columns=_names(arguments, column_keys),
     )

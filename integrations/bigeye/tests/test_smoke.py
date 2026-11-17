@@ -1,9 +1,10 @@
 """Tests for the Bigeye MCP pre-invoke rail. Bigeye is mocked with httpx.MockTransport.
 
 Covers: every decision value, block_on overrides (including UNSPECIFIED),
-missing decisions (proto3 JSON omits default enums), nothing-to-check short
-circuit, Bigeye failures (401, 500, timeout, unparseable, unknown decision),
-the host allowlist, both config locations, both response casings, warehouse
+missing decisions (proto3 JSON omits default enums), default and configured
+argument names, nothing to check (allow or block), Bigeye failures (401, 500,
+timeout, unparseable, unknown decision), the host allowlist (exact and
+*.domain entries), both config locations, both response casings, warehouse
 type mapping, the request body sent to Bigeye, payload-log redaction, retry safety (nothing the gateway
 would retry, one Bigeye call per request), and a leak matrix asserting that no
 key, identity value or SQL literal reaches a response, a log line or Bigeye on
@@ -121,7 +122,7 @@ class FakeBigeye:
 
 @pytest.fixture(autouse=True)
 def runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BIGEYE_ALLOWED_HOSTS", "app.bigeye.com,demo.bigeye.com")
+    monkeypatch.delenv("BIGEYE_ALLOWED_HOSTS", raising=False)
     monkeypatch.delenv("LOG_PAYLOADS", raising=False)
 
 
@@ -158,8 +159,13 @@ def test_debug_loaded_config_is_non_secret(client: TestClient) -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["routes"] == {"mcp_pre_invoke": ["/mcp-pre-invoke"]}
-    assert body["allowed_hosts"] == ["app.bigeye.com", "demo.bigeye.com"]
+    assert body["allowed_hosts"] == ["*.bigeye.com"]
     assert body["log_payloads"] is False
+    assert body["defaults"]["auth_scheme"] == "apikey"
+    assert body["defaults"]["sql_keys"] == ["query", "sql", "statement"]
+    assert body["defaults"]["table_keys"] == ["tables", "table"]
+    assert body["defaults"]["column_keys"] == ["columns", "column"]
+    assert body["defaults"]["on_nothing_to_check"] == "allow"
     assert API_KEY not in r.text
 
 
@@ -365,15 +371,106 @@ def test_assets_found_counts_decisions_and_unresolved_objects(
     assert r.json()["bigeye"]["unresolved_count"] + len(r.json()["bigeye"]["assets"]) == found
 
 
-@pytest.mark.parametrize("arguments", [{}, {"limit": 10}, {"query": "   "}, {"tables": []}, {"columns": ""}])
-def test_nothing_to_check_skips_bigeye(client: TestClient, bigeye: FakeBigeye, arguments: dict) -> None:
-    r = post(client, gateway_body(arguments))
+NOTHING_TO_CHECK_REASON = "no SQL, tables or columns in arguments"
+
+
+@pytest.mark.parametrize(
+    "arguments", [{}, {"limit": 10}, {"query": "   "}, {"statement": ""}, {"tables": []}, {"columns": ""}]
+)
+@pytest.mark.parametrize("setting", [None, "allow", " Allow "], ids=["default", "allow", "allow-mixed-case"])
+def test_nothing_to_check_skips_bigeye_with_a_warning(
+    client: TestClient, bigeye: FakeBigeye, caplog: pytest.LogCaptureFixture, arguments: dict, setting: Optional[str]
+) -> None:
+    caplog.set_level(logging.INFO)
+    config = CONFIG if setting is None else {**CONFIG, "on_nothing_to_check": setting}
+    r = post(client, gateway_body(arguments, config=config))
+    assert r.status_code == 200
+    assert r.json() == {"verdict": True, "message": None, "bigeye": {"checked": False, "reason": NOTHING_TO_CHECK_REASON}}
+    assert bigeye.requests == []
+    skipped = [rec for rec in caplog.records if rec.getMessage().startswith("bigeye skipped")]
+    assert [rec.levelno for rec in skipped] == [logging.WARNING]
+
+
+@pytest.mark.parametrize("setting", ["block", " BLOCK "])
+def test_on_nothing_to_check_block_denies_without_calling_bigeye(
+    client: TestClient, bigeye: FakeBigeye, setting: str
+) -> None:
+    r = post(client, gateway_body({"limit": 10}, config={**CONFIG, "on_nothing_to_check": setting}))
     assert r.status_code == 200
     assert r.json() == {
-        "verdict": True,
-        "message": None,
-        "bigeye": {"checked": False, "reason": "no SQL, tables or columns in arguments"},
+        "verdict": False,
+        "message": f"Bigeye could not check this call: {NOTHING_TO_CHECK_REASON}",
+        "bigeye": {"checked": False, "reason": NOTHING_TO_CHECK_REASON},
     }
+    assert bigeye.requests == []
+
+
+def test_on_nothing_to_check_block_still_checks_calls_that_name_data(client: TestClient, bigeye: FakeBigeye) -> None:
+    r = post(client, gateway_body({"table": CLEAN_TABLE}, config={**CONFIG, "on_nothing_to_check": "block"}))
+    assert r.json()["verdict"] is True
+    assert r.json()["bigeye"]["checked"] is True
+    assert len(bigeye.requests) == 1
+
+
+# --- argument names ---------------------------------------------------------
+
+SQL = "ACCESS_OBJECT_TYPE_SQL"
+TABLE = "ACCESS_OBJECT_TYPE_TABLE"
+COLUMN = "ACCESS_OBJECT_TYPE_COLUMN"
+CUSTOM_KEYS = {"sql_keys": ["sql_text"], "table_keys": ["target_table"], "column_keys": ["fields"]}
+
+
+def sent_objects(bigeye: FakeBigeye) -> list:
+    return [(o["type"], o["externalId"]) for o in bigeye.last_body()["accessObjects"]]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ({"query": "SELECT 1"}, [(SQL, "SELECT 1")]),
+        ({"sql": "SELECT 1"}, [(SQL, "SELECT 1")]),
+        ({"statement": "SELECT 1"}, [(SQL, "SELECT 1")]),
+        ({"query": "SELECT 1", "statement": "SELECT 2"}, [(SQL, "SELECT 1")]),
+        ({"query": "  ", "statement": "SELECT 2"}, [(SQL, "SELECT 2")]),
+        ({"tables": [CLEAN_TABLE]}, [(TABLE, CLEAN_TABLE)]),
+        ({"table": CLEAN_TABLE}, [(TABLE, CLEAN_TABLE)]),
+        ({"columns": [FLAGGED_COLUMN]}, [(COLUMN, FLAGGED_COLUMN)]),
+        ({"column": FLAGGED_COLUMN}, [(COLUMN, FLAGGED_COLUMN)]),
+    ],
+    ids=["query", "sql", "statement", "first-sql-key-wins", "blank-sql-key-skipped", "tables", "table", "columns",
+         "column"],
+)
+def test_default_argument_names(client: TestClient, bigeye: FakeBigeye, arguments: dict, expected: list) -> None:
+    r = post(client, gateway_body(arguments))
+    assert r.json()["bigeye"]["checked"] is True
+    assert sent_objects(bigeye) == expected
+
+
+def test_configured_argument_names_are_read(client: TestClient, bigeye: FakeBigeye) -> None:
+    arguments = {"sql_text": "SELECT 1", "target_table": CLEAN_TABLE, "fields": [FLAGGED_COLUMN]}
+    r = post(client, gateway_body(arguments, config={**CONFIG, **CUSTOM_KEYS}))
+    assert r.json()["bigeye"]["checked"] is True
+    assert sent_objects(bigeye) == [(TABLE, CLEAN_TABLE), (COLUMN, FLAGGED_COLUMN), (SQL, "SELECT 1")]
+
+
+@pytest.mark.parametrize(
+    "arguments", [{"query": "SELECT 1"}, {"statement": "SELECT 1"}, {"table": CLEAN_TABLE}, {"columns": [FLAGGED_COLUMN]}]
+)
+def test_configured_argument_names_replace_the_defaults(client: TestClient, bigeye: FakeBigeye, arguments: dict) -> None:
+    r = post(client, gateway_body(arguments, config={**CONFIG, **CUSTOM_KEYS}))
+    assert r.json()["bigeye"] == {"checked": False, "reason": NOTHING_TO_CHECK_REASON}
+    assert bigeye.requests == []
+
+
+def test_unconfigured_argument_names_keep_their_defaults(client: TestClient, bigeye: FakeBigeye) -> None:
+    config = {**CONFIG, "sql_keys": [" sql_text ", "sql_text"]}
+    post(client, gateway_body({"sql_text": "SELECT 1", "query": "SELECT 2", "table": CLEAN_TABLE}, config=config))
+    assert sent_objects(bigeye) == [(TABLE, CLEAN_TABLE), (SQL, "SELECT 1")]
+
+
+def test_nested_arguments_are_not_read(client: TestClient, bigeye: FakeBigeye) -> None:
+    r = post(client, gateway_body({"params": {"query": "SELECT 1", "table": CLEAN_TABLE}}))
+    assert r.json()["bigeye"] == {"checked": False, "reason": NOTHING_TO_CHECK_REASON}
     assert bigeye.requests == []
 
 
@@ -477,7 +574,18 @@ def test_other_errors_do_not_log_key_format_hint(
 
 @pytest.mark.parametrize(
     "url",
-    ["https://evil.example.com", "http://demo.bigeye.com", "https://demo.bigeye.com:8443", "https://demo.bigeye.com.evil.io"],
+    [
+        "https://evil.example.com",
+        "http://app.bigeye.com",
+        "https://app.bigeye.com:8443",
+        "https://bigeye.com.evil.io",
+        "https://app.bigeye.com.evil.io",
+        "https://evilbigeye.com",
+        "https://app.bigeye.com@evil.io",
+        "https://bigeye.com",
+        "https://evil%2eio.bigeye.com",
+        "https://.bigeye.com",
+    ],
 )
 def test_disallowed_host_returns_500_without_calling_bigeye(
     client: TestClient, bigeye: FakeBigeye, caplog: pytest.LogCaptureFixture, url: str
@@ -487,6 +595,20 @@ def test_disallowed_host_returns_500_without_calling_bigeye(
     assert r.status_code == 500
     assert bigeye.requests == []
     assert any(rec.levelno == logging.ERROR and "not allowed" in rec.getMessage() for rec in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("url", "host"),
+    [
+        ("https://acme.bigeye.com", "acme.bigeye.com"),
+        ("https://app.bigeye.com/", "app.bigeye.com"),
+        ("https://ACME.bigeye.com:443/ignored/path?x=1", "acme.bigeye.com"),
+    ],
+)
+def test_default_allowlist_accepts_bigeye_subdomains(client: TestClient, bigeye: FakeBigeye, url: str, host: str) -> None:
+    r = post(client, gateway_body({"column": FLAGGED_COLUMN}, config={**CONFIG, "bigeye_url": url}))
+    assert r.status_code == 200
+    assert str(bigeye.requests[0].url) == f"https://{host}/api/v1/access-decision"
 
 
 def test_allowlist_comes_from_env(client: TestClient, bigeye: FakeBigeye, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -511,6 +633,12 @@ def test_allowlist_comes_from_env(client: TestClient, bigeye: FakeBigeye, monkey
         {"warehouse_type": "snowflakes"},
         {"warehouse_type": "unspecified"},
         {"warehouse_type": "DATABASE_TYPE_"},
+        {"sql_keys": "statement"},
+        {"sql_keys": [""]},
+        {"table_keys": [7]},
+        {"column_keys": {"name": "column"}},
+        {"on_nothing_to_check": "deny"},
+        {"on_nothing_to_check": True},
     ],
 )
 def test_bad_config_returns_500(client: TestClient, bigeye: FakeBigeye, override: dict) -> None:
@@ -785,6 +913,12 @@ LEAK_SCENARIOS = [
         id="unresolved-only",
     ),
     pytest.param(None, {"arguments": {"limit": 5}}, 200, id="nothing-to-check"),
+    pytest.param(
+        None,
+        {"arguments": {"limit": 5}, "config": {**CONFIG, "on_nothing_to_check": "block"}},
+        200,
+        id="nothing-to-check-block",
+    ),
     pytest.param(_reply(401, {"message": f"bad key near {SQL_LITERAL}"}), {}, 502, id="bigeye-401"),
     pytest.param(_reply(400, {"message": f"cannot parse {LEAK_SQL}"}), {}, 502, id="bigeye-400-quotes-sql"),
     pytest.param(_reply(429, {"message": "slow down"}), {}, 502, id="bigeye-429"),

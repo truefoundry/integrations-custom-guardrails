@@ -1,15 +1,18 @@
-# Runs bigeye/access-decision before every tool call on the stub-sql-mcp server.
+# Runs bigeye/access-decision before every tool call on one MCP server.
 # Omitted conditions (mcpTools, model, subjects) count as a match, so listing only
-# mcpServers covers every tool on that server. Apply with: tfy apply -f bigeye-policy.yaml
+# mcpServers covers every tool on that server. To cover a single tool, list
+# "<mcp-server-name>:<tool-name>" instead. Do that if on_nothing_to_check is block;
+# on a whole server it blocks every tool that isn't a SQL tool.
+# Apply with: tfy apply -f bigeye-policy.yaml
 type: gateway-guardrails-config
-name: bigeye-stub-sql
+name: bigeye-access-decision
 when:
   target:
     operator: or
     conditions:
       mcpServers:
         condition: in
-        values: [stub-sql-mcp]
+        values: [<mcp-server-name>]
 llm_input_guardrails: []
 llm_output_guardrails: []
 mcp_tool_pre_invoke_guardrails: [bigeye/access-decision]

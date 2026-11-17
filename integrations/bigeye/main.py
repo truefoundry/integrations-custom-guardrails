@@ -33,7 +33,11 @@ from guardrail._settings import (
     DEFAULT_AGENT_ID,
     DEFAULT_BIGEYE_URL,
     DEFAULT_BLOCK_ON,
+    DEFAULT_COLUMN_KEYS,
+    DEFAULT_ON_NOTHING_TO_CHECK,
     DEFAULT_OPERATION,
+    DEFAULT_SQL_KEYS,
+    DEFAULT_TABLE_KEYS,
     DEFAULT_TIMEOUT_MS,
     ConfigError,
     allowed_hosts,
@@ -116,6 +120,10 @@ async def debug_loaded_config() -> dict:
             "bigeye_timeout_ms": DEFAULT_TIMEOUT_MS,
             "agent_id": DEFAULT_AGENT_ID,
             "operation": DEFAULT_OPERATION,
+            "sql_keys": list(DEFAULT_SQL_KEYS),
+            "table_keys": list(DEFAULT_TABLE_KEYS),
+            "column_keys": list(DEFAULT_COLUMN_KEYS),
+            "on_nothing_to_check": DEFAULT_ON_NOTHING_TO_CHECK,
         },
     }
 
