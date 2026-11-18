@@ -1,6 +1,6 @@
 # `bigeye-guardrails-tfy`
 
-**Status:** tested against Bigeye's live Access Decision API. Not yet tested against a catalog with findings, or end to end through a TrueFoundry gateway.
+**Status:** tested against Bigeye's live Access Decision API, and end to end through a TrueFoundry gateway on an MCP tool pre-invoke policy: allowed calls reach the tool, blocked calls don't, and calls go through when the wrapper is down (`enforce_but_ignore_on_error`). Not yet tested against a catalog with findings: Bigeye returned `UNSPECIFIED`, so the gateway test forced the block by adding `UNSPECIFIED` to `block_on`.
 
 Custom guardrail that asks [Bigeye's Access Decision API](https://docs.bigeye.com/docs/access-decision-api) whether an MCP tool call may touch the warehouse data it names. It attaches to the gateway's `mcp_tool_pre_invoke` hook as a **Validate** guardrail. The gateway waits for the verdict, so a block means the tool never runs.
 
