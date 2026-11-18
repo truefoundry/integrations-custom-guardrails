@@ -19,7 +19,7 @@ WORKSPACE_FQN = os.environ.get("TFY_WORKSPACE_FQN", "<cluster>:<workspace>")
 PUBLIC_HOST = os.environ.get("TFY_PUBLIC_HOST", "ml.<cluster>.truefoundry.cloud")
 PUBLIC_PATH = os.environ.get("TFY_PUBLIC_PATH", "").strip() or None
 if PUBLIC_PATH:
-    PUBLIC_PATH = "/" + PUBLIC_PATH.strip("/") + "/"
+    PUBLIC_PATH = f"/{PUBLIC_PATH.strip('/')}/"
 
 
 def build_service() -> Service:

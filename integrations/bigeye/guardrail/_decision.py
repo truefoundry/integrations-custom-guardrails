@@ -115,7 +115,7 @@ def _asset_name(access_object: dict) -> str:
     return f"<id:{catalog_id}>" if catalog_id is not None else "<unnamed>"
 
 
-def _signals(attributes: Any) -> dict:
+def _signals(attributes: object) -> dict:
     signals: dict = {}
     for attribute in attributes if isinstance(attributes, list) else []:
         if not isinstance(attribute, dict) or attribute.get("key") not in SIGNAL_KEYS:
@@ -127,24 +127,24 @@ def _signals(attributes: Any) -> dict:
     return signals
 
 
-def _asset_decision(raw: Any) -> str:
+def _asset_decision(raw: object) -> str:
     """proto3 JSON omits a default enum value, so a missing decision is UNSPECIFIED."""
     if raw is None:
         return UNSPECIFIED
     return normalize_decision(raw) or UNKNOWN_DECISION
 
 
-def _asset(entry: Any) -> AssetDecision:
-    entry = entry if isinstance(entry, dict) else {}
-    access_object = _get(entry, "accessObject", "access_object")
+def _asset(entry: object) -> AssetDecision:
+    fields = entry if isinstance(entry, dict) else {}
+    access_object = _get(fields, "accessObject", "access_object")
     return AssetDecision(
         name=_asset_name(access_object if isinstance(access_object, dict) else {}),
-        decision=_asset_decision(_get(entry, "accessDecision", "access_decision")),
-        signals=_signals(_get(entry, "accessObjectAttributes", "access_object_attributes")),
+        decision=_asset_decision(_get(fields, "accessDecision", "access_decision")),
+        signals=_signals(_get(fields, "accessObjectAttributes", "access_object_attributes")),
     )
 
 
-def _list(value: Any) -> list:
+def _list(value: object) -> list:
     return value if isinstance(value, list) else []
 
 

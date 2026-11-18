@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any
 
 log = logging.getLogger("bigeye-guardrails-tfy")
 
@@ -23,7 +22,7 @@ def payload_logging_enabled() -> bool:
     return os.environ.get("LOG_PAYLOADS", "").strip().lower() in ("1", "true", "yes")
 
 
-def _redact(value: Any) -> Any:
+def _redact(value: object) -> object:
     if isinstance(value, dict):
         return {k: _redact(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -33,7 +32,7 @@ def _redact(value: Any) -> Any:
     return f"<redacted:{type(value).__name__}>"
 
 
-def _truncate(value: Any) -> Any:
+def _truncate(value: object) -> object:
     if isinstance(value, dict):
         return {k: _truncate(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -44,7 +43,7 @@ def _truncate(value: Any) -> Any:
 
 
 def redact_payload(payload: dict) -> dict:
-    redacted = _truncate(payload)
+    redacted = {k: _truncate(v) for k, v in payload.items()}
     context = redacted.get("context")
     if isinstance(context, dict):
         user = context.get("user")

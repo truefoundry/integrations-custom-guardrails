@@ -13,7 +13,7 @@ RUN apt-get update \
 
 # Install runtime deps
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install uv && uv pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Optional: build-time vendor setup (Guardrails Hub validators, NVIDIA NGC, etc.)
 # Uncomment and adapt if your vendor requires a build-time install step.
@@ -30,5 +30,9 @@ COPY . .
 ARG BUILD_REF
 ENV BUILD_REF=${BUILD_REF:-unknown}
 
+RUN useradd --create-home --uid 10001 app
+USER app
+
 EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s CMD curl -fsS http://127.0.0.1:8000/health || exit 1
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

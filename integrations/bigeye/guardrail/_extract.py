@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ def _first_sql(arguments: dict, keys: tuple) -> Optional[str]:
     return None
 
 
-def _split_names(value: Any) -> list:
+def _split_names(value: object) -> list:
     if isinstance(value, str):
         text = value.strip()
         if text.startswith("["):

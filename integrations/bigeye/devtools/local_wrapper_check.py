@@ -233,16 +233,17 @@ def masked(text: str, secrets: tuple) -> str:
 
 def wait_until_up(http: httpx.Client, base: str, server: subprocess.Popen) -> None:
     deadline = time.monotonic() + STARTUP_TIMEOUT_S
+    last_error: httpx.TransportError | None = None
     while time.monotonic() < deadline:
         if server.poll() is not None:
             raise RuntimeError(f"wrapper exited during startup with code {server.returncode}")
         try:
             if http.get(f"{base}/health").status_code == 200:
                 return
-        except httpx.TransportError:
-            pass
+        except httpx.TransportError as exc:
+            last_error = exc
         time.sleep(STARTUP_POLL_S)
-    raise RuntimeError(f"wrapper did not answer /health within {STARTUP_TIMEOUT_S}s")
+    raise RuntimeError(f"wrapper did not answer /health within {STARTUP_TIMEOUT_S}s") from last_error
 
 
 def run_cases(http: httpx.Client, cases: list, log_path: Path, secrets: tuple) -> int:

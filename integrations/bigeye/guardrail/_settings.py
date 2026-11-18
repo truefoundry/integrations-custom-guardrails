@@ -16,7 +16,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 from urllib.parse import urlsplit
 
 log = logging.getLogger("bigeye-guardrails-tfy")
@@ -77,7 +77,7 @@ class BigeyeSettings:
     on_nothing_to_check: str
 
 
-def normalize_decision(value: Any) -> Optional[str]:
+def normalize_decision(value: object) -> Optional[str]:
     """Map ``ACCESS_DECISION_DENY`` or ``DENY`` (any case) to ``DENY``; None if unknown."""
     if not isinstance(value, str):
         return None
@@ -125,23 +125,32 @@ def dashboard_config(raw: Optional[dict]) -> dict:
     return inner if isinstance(inner, dict) else raw
 
 
-def _workspace_id(value: Any) -> int:
-    if isinstance(value, bool) or value in (None, ""):
-        raise ConfigError("workspace_id is required")
+def _as_int(value: object) -> Optional[int]:
+    if not isinstance(value, (int, float, str)):
+        return None
     try:
         return int(value)
-    except (TypeError, ValueError):
-        raise ConfigError("workspace_id must be an integer") from None
+    except ValueError:
+        return None
 
 
-def _auth_scheme(value: Any) -> str:
+def _workspace_id(value: object) -> int:
+    if isinstance(value, bool) or value in (None, ""):
+        raise ConfigError("workspace_id is required")
+    workspace_id = _as_int(value)
+    if workspace_id is None:
+        raise ConfigError("workspace_id must be an integer")
+    return workspace_id
+
+
+def _auth_scheme(value: object) -> str:
     scheme = AUTH_SCHEMES.get(str(value or "apikey").strip().lower())
     if scheme is None:
         raise ConfigError("auth_scheme must be 'apikey' or 'bearer'")
     return scheme
 
 
-def _block_on(value: Any) -> frozenset:
+def _block_on(value: object) -> frozenset:
     if value is None:
         return frozenset(DEFAULT_BLOCK_ON)
     if not isinstance(value, list):
@@ -152,7 +161,7 @@ def _block_on(value: Any) -> frozenset:
     return frozenset(decisions)
 
 
-def _bool(value: Any, name: str) -> bool:
+def _bool(value: object, name: str) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str) and value.strip().lower() in ("true", "false"):
@@ -160,23 +169,22 @@ def _bool(value: Any, name: str) -> bool:
     raise ConfigError(f"{name} must be true or false")
 
 
-def _timeout_ms(value: Any) -> int:
+def _timeout_ms(value: object) -> int:
     if value is None:
         return DEFAULT_TIMEOUT_MS
-    try:
-        timeout = int(value)
-    except (TypeError, ValueError):
-        raise ConfigError("bigeye_timeout_ms must be an integer") from None
+    timeout = _as_int(value)
+    if timeout is None:
+        raise ConfigError("bigeye_timeout_ms must be an integer")
     if not MIN_TIMEOUT_MS <= timeout <= MAX_TIMEOUT_MS:
         raise ConfigError(f"bigeye_timeout_ms must be between {MIN_TIMEOUT_MS} and {MAX_TIMEOUT_MS}")
     return timeout
 
 
-def _optional_str(value: Any) -> Optional[str]:
+def _optional_str(value: object) -> Optional[str]:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def _warehouse_type(value: Any) -> Optional[str]:
+def _warehouse_type(value: object) -> Optional[str]:
     """``DATABASE_TYPE_SNOWFLAKE`` as is; ``WAREHOUSE_TYPE_SNOWFLAKE`` or ``snowflake`` mapped to it; None if unset."""
     name = _optional_str(value)
     if name is None:
@@ -193,7 +201,7 @@ def _warehouse_type(value: Any) -> Optional[str]:
     return name
 
 
-def _argument_keys(value: Any, name: str, default: tuple) -> tuple:
+def _argument_keys(value: object, name: str, default: tuple) -> tuple:
     if value is None:
         return default
     if not isinstance(value, list) or not all(isinstance(key, str) and key.strip() for key in value):
@@ -201,7 +209,7 @@ def _argument_keys(value: Any, name: str, default: tuple) -> tuple:
     return tuple(dict.fromkeys(key.strip() for key in value))
 
 
-def _on_nothing_to_check(value: Any) -> str:
+def _on_nothing_to_check(value: object) -> str:
     if value is None:
         return DEFAULT_ON_NOTHING_TO_CHECK
     choice = value.strip().lower() if isinstance(value, str) else None
