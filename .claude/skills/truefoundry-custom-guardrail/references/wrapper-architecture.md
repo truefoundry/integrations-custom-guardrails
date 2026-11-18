@@ -312,7 +312,7 @@ COPY . .
 ARG BUILD_REF
 ENV BUILD_REF=${BUILD_REF:-unknown}
 
-RUN useradd --create-home --uid 10001 app
+RUN useradd --create-home --no-log-init --uid 10001 app
 USER app
 
 EXPOSE 8000
@@ -322,7 +322,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 `git` in apt is required because `guardrails-ai` PyPI package is quarantined; we pin to a GitHub tag in `requirements.txt`. Remove if you're not using guardrails-ai.
 
-The non-root `USER`, `HEALTHCHECK` and `pip --no-cache-dir` are what Datadog's static analysis asks for on PRs (gotchas G32). `_template/Dockerfile` and the older integrations predate them; `integrations/bigeye/Dockerfile` is the hardened example. Put `USER` after every build step, so build-time installs still run as root. Runtime caches go to the user's home, which `--create-home` makes writable. Kubernetes and TrueFoundry ignore `HEALTHCHECK` and use the probes in `deploy.py`; it matters when the image runs under plain Docker.
+The non-root `USER` (created with `--no-log-init`), `HEALTHCHECK` and `pip --no-cache-dir` are what Datadog's static analysis asks for on PRs (gotchas G32). `_template/Dockerfile` and the older integrations predate them; `integrations/bigeye/Dockerfile` is the hardened example. Put `USER` after every build step, so build-time installs still run as root. Runtime caches go to the user's home, which `--create-home` makes writable. Kubernetes and TrueFoundry ignore `HEALTHCHECK` and use the probes in `deploy.py`; it matters when the image runs under plain Docker.
 
 ## tests/test_smoke.py (canonical)
 

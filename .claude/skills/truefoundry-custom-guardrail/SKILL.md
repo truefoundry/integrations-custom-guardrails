@@ -95,7 +95,7 @@ This repo ships a working example: a TFY Service deploy via the TrueFoundry Pyth
 
 For a gateway test without a deployable cluster, run the container locally and expose it with an HTTPS tunnel (`references/deployment-playbook.md` "Testing without a cluster").
 
-Start the Dockerfile from the hardened version in `references/wrapper-architecture.md` (non-root `USER`, `HEALTHCHECK`, `pip --no-cache-dir`). `_template/Dockerfile` predates it, and Datadog flags the difference on every PR.
+Start the Dockerfile from the hardened version in `references/wrapper-architecture.md` (non-root `USER` via `useradd --no-log-init`, `HEALTHCHECK`, `pip --no-cache-dir`). `_template/Dockerfile` predates it, and Datadog flags the difference on every PR.
 
 Key points for the TFY-Service example (full detail in playbook):
 - `load_dotenv(override=True)` — without `override=True`, stale shell values silently win over `.env`.

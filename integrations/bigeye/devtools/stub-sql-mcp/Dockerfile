@@ -11,7 +11,7 @@ RUN pip install -r requirements.txt
 
 COPY server.py .
 
-RUN useradd --create-home --uid 10001 app
+RUN useradd --create-home --no-log-init --uid 10001 app
 USER app
 
 EXPOSE 8000

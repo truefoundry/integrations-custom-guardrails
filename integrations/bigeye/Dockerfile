@@ -30,7 +30,7 @@ COPY . .
 ARG BUILD_REF
 ENV BUILD_REF=${BUILD_REF:-unknown}
 
-RUN useradd --create-home --uid 10001 app
+RUN useradd --create-home --no-log-init --uid 10001 app
 USER app
 
 EXPOSE 8000
