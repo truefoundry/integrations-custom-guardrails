@@ -16,6 +16,7 @@ This is the canonical shape for a TrueFoundry custom-guardrail wrapper. Modeled 
 ├── requirements-dev.txt
 ├── main.py                        # FastAPI app, route registration, bearer auth, /debug
 ├── entities.py                    # Pydantic models (ValidateGuardrailResponse, MutateGuardrailResponse, InputGuardrailRequest, OutputGuardrailRequest, RequestContext)
+├── mcp_entities.py                # OPTIONAL: lenient request models for MCP tool hooks (entities.py stays identical to _template)
 ├── setup.py                       # OPTIONAL: build-time installer (Guardrails Hub validators, etc.)
 ├── guardrail/                     # one file per rail/direction
 │   ├── __init__.py
@@ -24,6 +25,7 @@ This is the canonical shape for a TrueFoundry custom-guardrail wrapper. Modeled 
 │   ├── <rail_name>_input.py       # one function per input rail
 │   └── <rail_name>_output.py      # one function per output rail
 ├── config/                        # OPTIONAL: vendor-specific config (Colang YAML, prompts, etc.)
+├── devtools/                      # OPTIONAL: live-vendor smoke test, local wrapper check, test-only stub servers
 ├── docs/
 │   ├── DESIGN.md
 │   ├── blog-<vendor>.md
@@ -74,6 +76,8 @@ class OutputGuardrailRequest(BaseModel):
 ```
 
 Don't add `extra="allow"` — the schema is well-defined and the gateway uses these fields. Extra fields in incoming payloads are silently dropped, which is what we want.
+
+MCP tool hooks are the exception: their payloads carry raw tool arguments, non-string `metadata` values and `context.claims`, which this `RequestContext` can reject. Put lenient models in `mcp_entities.py` instead of editing `entities.py`; see `integrations/bigeye/mcp_entities.py` and `gateway-contract.md` "MCP tool pre-invoke".
 
 ## main.py — canonical shape
 
@@ -161,6 +165,24 @@ def <rail_name>_input(request: InputGuardrailRequest) -> ValidateGuardrailRespon
 
 Per-rail files keep each rail isolated and easy to test. **Do NOT** compose multiple validators into one file unless they share heavy state (e.g. a model load); even then prefer one file per direction.
 
+The catch-all `except Exception` suits libraries that signal a violation by raising (Guardrails AI's `on_fail="exception"`). For a SaaS vendor, catch only the violation signal and let transport failures become 502/504 (below), so the enforcing strategy decides what an outage means instead of every outage becoming a block.
+
+## Reading config and mapping errors
+
+Read the dashboard Config JSON from `config.config`, falling back to the top-level `config` (see `gateway-contract.md`). Parse it into a typed settings object up front. Helpers take `object`, not `Any`, and narrow with `isinstance`: untrusted JSON can hold anything.
+
+Only verdicts are 200s. Everything else gets an error status, and the enforcing strategy decides what it means:
+
+| Situation | Status |
+|---|---|
+| Missing or wrong bearer token | 401 |
+| Payload has the wrong shape | 422 with field locations only (override FastAPI's default handler, which echoes the input) |
+| Bad Config JSON or wrapper misconfiguration | 500 |
+| Vendor non-2xx (including its 429/503), unparseable body, unrecognised decision value | 502 |
+| Vendor timeout | 504 |
+
+Never return 429 or 503: the gateway retries them. `integrations/bigeye/main.py` registers an exception handler for each case.
+
 ## Async vs sync handlers
 
 - Sync handler functions are fine for fast local validators (Presidio, detect-secrets, etc.).
@@ -174,11 +196,13 @@ Per-rail files keep each rail isolated and easy to test. **Do NOT** compose mult
 | `HTTP 200` + `{"verdict": true}` | Pass (rail did not fire) |
 | `HTTP 200` + `{"verdict": false, "message": "..."}` | **Block** (rail decided) — gateway propagates as `guardrail_checks_failed` |
 | `HTTP 200` + `{"verdict": true, "transformed": true, "result": <body>}` | Mutate (only if dashboard `Operation: Mutate`) |
-| Any non-2xx | Real error. Routed through `Fail on error` policy. |
+| Any non-2xx | Real error. Routed through the guardrail's enforcing strategy. |
 
 **The wrapper's HTTP status code only carries "completed" vs "errored".** The verdict (allow vs block) lives in the JSON body. This is a behavioral change from the pre-`a1c551be` gateway, where 4xx was the block signal and `Fail on error: true` was mandatory.
 
-After this contract: **`Fail on error: false` is the correct default** because rail-block (200 + verdict=false) and real outage (5xx) are now distinguishable.
+After this contract: **`enforce_but_ignore_on_error` (formerly `Fail on error: false`) is the correct default** because rail-block (200 + verdict=false) and real outage (5xx) are now distinguishable.
+
+Extra fields in a 200 body don't affect the verdict, but the gateway keeps the whole body on the trace (`guardrailResponse`). Use them for a non-sensitive decision summary, never for secrets or raw user content.
 
 ## Build-time vendor setup (e.g. Guardrails Hub validators)
 
@@ -275,7 +299,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install uv && uv pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Optional: build-time vendor setup (Guardrails Hub, etc.)
 # ARG GUARDRAILS_TOKEN
@@ -288,11 +312,17 @@ COPY . .
 ARG BUILD_REF
 ENV BUILD_REF=${BUILD_REF:-unknown}
 
+RUN useradd --create-home --no-log-init --uid 10001 app
+USER app
+
 EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s CMD curl -fsS http://127.0.0.1:8000/health || exit 1
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 `git` in apt is required because `guardrails-ai` PyPI package is quarantined; we pin to a GitHub tag in `requirements.txt`. Remove if you're not using guardrails-ai.
+
+The non-root `USER` (created with `--no-log-init`), `HEALTHCHECK` and `pip --no-cache-dir` are what Datadog's static analysis asks for on PRs (gotchas G32). `_template/Dockerfile` and the older integrations predate them; `integrations/bigeye/Dockerfile` is the hardened example. Put `USER` after every build step, so build-time installs still run as root. Runtime caches go to the user's home, which `--create-home` makes writable. Kubernetes and TrueFoundry ignore `HEALTHCHECK` and use the probes in `deploy.py`; it matters when the image runs under plain Docker.
 
 ## tests/test_smoke.py (canonical)
 
@@ -316,3 +346,10 @@ body = r.json()
 assert body["verdict"] is False      # rail decided
 assert "<ValidatorName>" in body["message"]   # tells us which rail
 ```
+
+For a SaaS vendor, also:
+
+- **Mock the vendor and run the suite with outbound network blocked** (e.g. patch `socket.socket.connect` and `socket.getaddrinfo` to allow loopback only, in `conftest.py`), so a green run proves nothing calls out.
+- **Send gateway-shaped payloads**: Config JSON nested at `config.config` as well as flat, and for MCP rails raw tool arguments with non-string `metadata` and `context.claims`.
+- **Cover every error status** in "Reading config and mapping errors", including that a vendor 429/503 becomes 502.
+- Optionally add `devtools/`: a smoke test that calls the live vendor through the wrapper's request builder, and a local check that starts the wrapper, sends gateway-shaped payloads and fails if the key appears in the log. Together these let the vendor test the integration without a TrueFoundry tenant (`integrations/bigeye/devtools/`).

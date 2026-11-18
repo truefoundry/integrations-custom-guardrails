@@ -1,0 +1,38 @@
+# Guardrail group "bigeye" with one MCP pre-invoke config. Apply with: tfy apply -f bigeye-guardrail-group.yaml
+# Selector for policies: bigeye/access-decision
+#
+# bearer_token is the Bigeye API key; the wrapper forwards it to Bigeye as
+# "Authorization: <auth_scheme> <key>". Use a tfy-secret:// reference or paste
+# the key in the UI. Never commit a real key.
+#
+# Add one integration per Bigeye data source: source_name and warehouse_type apply
+# to every table, column and SQL object in a call.
+name: bigeye
+type: provider-account/guardrail-config-group
+integrations:
+  - name: access-decision
+    type: integration/guardrail-config/custom
+    description: Bigeye access decision for MCP tool calls that touch warehouse data
+    target: request
+    operation: validate
+    enforcing_strategy: enforce_but_ignore_on_error
+    auth_data:
+      type: bearer-auth
+      bearer_token: <tfy-secret://... reference to the Bigeye API key>
+    config:
+      url: https://<wrapper-host>/<wrapper-path>/mcp-pre-invoke
+      config:
+        bigeye_url: https://<your-stack>.bigeye.com
+        workspace_id: <bigeye-workspace-id>
+        auth_scheme: apikey
+        source_name: <bigeye data source name>
+        warehouse_type: DATABASE_TYPE_SNOWFLAKE  # e.g. snowflake or DATABASE_TYPE_BIGQUERY; remove to omit sourceType
+        block_on: [DENY, REQUIRE_CONFIRMATION]
+        evaluate_policy: false
+        bigeye_timeout_ms: 3500
+        agent_id: truefoundry-gateway
+        operation: mcp_tool_call
+        sql_keys: [query, sql, statement]
+        table_keys: [tables, table]
+        column_keys: [columns, column]
+        on_nothing_to_check: allow

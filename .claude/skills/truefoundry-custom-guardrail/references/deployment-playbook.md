@@ -234,6 +234,36 @@ The base image, `nltk_data`, hub validator weights (toxic-language: ~45 MB), and
 2. **If it persists, slim the image.** Biggest wins: don't bake HF/spaCy/nltk model weights into the image (download at first run instead); multi-stage build that drops the `apt`, `pip`, and uv caches; strip dev deps from the runtime stage.
 3. **Don't rely on `--wait`'s success.** Combined with footgun #6, the deploy can look successful from the script side while the cluster is still on the old image. Always verify `activeVersion == lastVersion` post-deploy.
 
+### 8. The SDK uploads what `.tfyignore` (or git) doesn't ignore, not what `.dockerignore` excludes
+
+`deploy.py` packages the local directory as the build source. The SDK filters it with `.tfyignore` if one exists, otherwise with git's ignore rules; `.dockerignore` only applies later, inside the Docker build. So untracked files that git doesn't ignore (extra virtualenvs, logs, patch files, a stray credentials file) get uploaded to the remote build. Keep secrets in gitignored files, or add a `.tfyignore`.
+
+### 9. `Cluster <name> not connected`
+
+The workspace's cluster agent is down; nothing in `deploy.py` fixes it. Report it, and don't switch clusters or hosts on your own. To keep testing meanwhile, run locally behind a tunnel (next section).
+
+## Testing without a cluster: local Docker and an HTTPS tunnel
+
+When there's no deployable cluster, or you want a fast loop, run the containers locally and expose them to the hosted gateway over HTTPS. Bigeye's end-to-end gateway test used this.
+
+1. **Docker runtime.** On macOS without Docker Desktop: `brew install colima docker && colima start`.
+2. **Build and run.** Don't mount `.env` into a container whose credentials arrive with each request, and keep `LOG_PAYLOADS=false`.
+
+   ```bash
+   docker build --build-arg BUILD_REF=$(git rev-parse --short HEAD) -t <vendor>-wrapper:local .
+   docker run -d --name <vendor>-wrapper -p 127.0.0.1:8000:8000 <vendor>-wrapper:local
+   ```
+
+3. **Tunnel.** `cloudflared tunnel --url http://localhost:8000` prints a `https://<random>.trycloudflare.com` URL; register `<url>/<rail-path>` as the guardrail URL. Quick tunnels also carry MCP streamable HTTP, so a test MCP server can sit behind a second tunnel.
+4. **Fail-open check.** `docker stop <vendor>-wrapper` with the tunnel still up, make one call, and expect it to succeed under `enforce_but_ignore_on_error`. Then `docker start` it again.
+5. **Clean up.** Stop the tunnels, `docker rm` the containers, and delete the gateway resources you created.
+
+Tunnel gotchas:
+
+- Quick-tunnel URLs change on every start, and the tunnel dies when the machine sleeps (Cloudflare answers `Tunnel not found`). Restart it and update the guardrail URL.
+- macOS caches a failed lookup for a brand-new hostname, so a curl sent before DNS propagates keeps failing afterwards. Wait until `dig +short @1.1.1.1 <host>` resolves before the first request, or use `curl --resolve`.
+- Agent sandboxes such as Cursor's can kill `nohup ... &` children when the command returns. Run the tunnel in its own terminal or a managed background shell.
+
 ## Secrets
 
 Create two secrets in the TFY dashboard under **Platform → Secrets → + Secret Group `<vendor>-guardrail-tfy`**:
@@ -250,7 +280,7 @@ VENDOR_KEY_SECRET_FQN=tfy-secret://<workspace>/<vendor>-guardrail-tfy/vendor-key
 WRAPPER_API_KEY_SECRET_FQN=tfy-secret://<workspace>/<vendor>-guardrail-tfy/wrapper-api-key
 ```
 
-**Critical**: the `wrapper-api-key` secret's value must be the same string you configure in the dashboard's "Custom Bearer Auth" field on the guardrail config. If they don't match, the gateway calls the wrapper and gets 401, and `Fail on error: true` (which you must have set) returns "guardrail check failed" to the caller. From the outside it looks like a wiring bug; from inside it's a value mismatch.
+**Critical**: the `wrapper-api-key` secret's value must be the same string you configure in the dashboard's "Custom Bearer Auth" field on the guardrail config. If they don't match, the gateway calls the wrapper and gets 401. Under `enforce` that returns "guardrail check failed" to the caller; under `enforce_but_ignore_on_error` every request silently passes and only the trace shows `ignored_error`. From the outside it looks like a wiring bug; from inside it's a value mismatch.
 
 ## Authentication patterns
 
