@@ -1,10 +1,10 @@
 # `bigeye-guardrails-tfy`
 
-**Status:** tested against Bigeye's live Access Decision API, and end to end through a TrueFoundry gateway on an MCP tool pre-invoke policy: allowed calls reach the tool, blocked calls don't, and calls go through when the wrapper is down (`enforce_but_ignore_on_error`). Not yet tested against a catalog with findings: Bigeye returned `UNSPECIFIED`, so the gateway test forced the block by adding `UNSPECIFIED` to `block_on`.
+**Status:** tested against Bigeye's live Access Decision API on a catalog with findings, and end to end through a TrueFoundry gateway on an MCP tool pre-invoke policy with the default `block_on`. A table with open issues came back DENY and was blocked before the tool ran, a clean table came back ALLOW and the tool ran, and an unresolved name came back UNSPECIFIED and was allowed. Calls also go through when the wrapper is down (`enforce_but_ignore_on_error`). Not yet tested: sensitive-data findings, policy mode on a workspace with policies, and `UNSPECIFIED` in `block_on` on cataloged assets (see Response contract).
 
 Custom guardrail that asks [Bigeye's Access Decision API](https://docs.bigeye.com/docs/access-decision-api) whether an MCP tool call may touch the warehouse data it names. It attaches to the gateway's `mcp_tool_pre_invoke` hook as a **Validate** guardrail. The gateway waits for the verdict, so a block means the tool never runs.
 
-The wrapper pulls SQL, table names and column names out of the tool arguments and sends them to `POST /api/v1/access-decision`. It blocks when Bigeye's overall decision is in `block_on`, or, if `block_on` includes `UNSPECIFIED`, when any asset is UNSPECIFIED or unresolved.
+The wrapper pulls SQL, table names and column names out of the tool arguments and sends them to `POST /api/v1/access-decision`. It blocks when Bigeye's overall decision is in `block_on`, or, if `block_on` includes `UNSPECIFIED`, when any asset is UNSPECIFIED or unresolved. A guardrail can only allow or block, so `REQUIRE_CONFIRMATION` in the default `block_on` is a hard block; remove it to let those calls through.
 
 ## Response contract
 
@@ -20,13 +20,15 @@ Per [`docs/gateway-contract.md`](../../docs/gateway-contract.md):
 | `502` | error JSON | Bigeye non-2xx (including a rejected key), a non-JSON body, or an unrecognised decision value |
 | `504` | error JSON | Bigeye did not answer within `bigeye_timeout_ms` |
 
-The wrapper never returns 429 or 503, because the gateway retries those; a 429 or 503 from Bigeye becomes 502. The wrapper itself makes one Bigeye call per request and never retries. Use `enforce_but_ignore_on_error` so Bigeye outages fail open.
+The wrapper never returns 429 or 503, because the gateway retries those; a 429 or 503 from Bigeye becomes 502. The wrapper itself makes one Bigeye call per request and never retries. Use `enforce_but_ignore_on_error` while you pilot, so Bigeye outages fail open; for production access to regulated data, use `enforce`, so calls are blocked when the check can't run.
 
 Bigeye's own error message is logged only when `LOG_PAYLOADS=true`, because it can quote the SQL. A Bigeye 500 that mentions base64 means it could not decode the key, usually because `auth_scheme` is `bearer` for a personal API key or the key was truncated; the wrapper logs that hint instead.
 
 Bigeye's responses are proto3 JSON, which omits enum fields set to their default. A missing per-asset `accessDecision` counts as UNSPECIFIED. A missing `overallDecision` follows Bigeye's rule: the most severe per-asset decision (DENY > REQUIRE_CONFIRMATION > WARN > ALLOW), ignoring UNSPECIFIED, or UNSPECIFIED when no asset has a decision.
 
-`UNSPECIFIED` in `block_on` blocks when the overall decision is UNSPECIFIED, or when any asset is UNSPECIFIED or unresolved, whether or not Bigeye sent an overall decision. Use it to block calls that touch data Bigeye can't vouch for.
+Bigeye reports two kinds of undecided asset. Objects it can't resolve at all, for example because `source_name` matches no data source, are listed in `unresolvedAccessObjects`. Assets it recognizes but hasn't cataloged come back in `accessObjectDecisions` with decision UNSPECIFIED and a source name such as `Unknown Snowflake`. Neither counts toward the overall decision.
+
+`UNSPECIFIED` in `block_on` blocks when the overall decision is UNSPECIFIED, or when any asset is UNSPECIFIED or unresolved, whether or not Bigeye sent an overall decision. Use it to block calls that touch data Bigeye can't vouch for. Check Bigeye's responses before relying on it: in testing, Bigeye left out `accessDecision` on every resolved asset, including on DENY and ALLOW calls, so every asset read as UNSPECIFIED and this setting would have blocked every call.
 
 The `bigeye` summary lands on the gateway trace span. It looks like `{checked, span_external_id, overall_decision, assets: [{name, decision}], unresolved_count, assets_found, latency_ms}`, or `{checked: false, reason}` when there was nothing to check. `assets_found` is the per-asset decisions plus unresolved objects, so an SQL check where Bigeye found nothing shows 0. SQL text and data values are never included; SQL assets are named `<sql>`.
 
@@ -42,7 +44,7 @@ POST /mcp-pre-invoke          MCP tool pre-invoke rail (Operation: Validate)
 
 The guardrail config's Bearer token is the Bigeye API key. The wrapper forwards it as `Authorization: <auth_scheme> <key>` and stores nothing, so there is no separate wrapper key.
 
-`auth_scheme` defaults to `apikey`. Bigeye's docs specify `Authorization: apikey <key>` for personal API keys, and its API rejects them when sent as Bearer. Bigeye recommends a service-account key scoped to the target workspace; end users are identified by `username`, not by their own Bigeye credentials.
+`auth_scheme` defaults to `apikey`. Bigeye's docs specify `Authorization: apikey <key>` for personal API keys, and its API rejects them when sent as Bearer. Bigeye recommends a service-account key scoped to the target workspace; end users are identified by `username`, not by their own Bigeye credentials. The key needs at least Edit access to the target workspace.
 
 The wrapper only calls https hosts that `BIGEYE_ALLOWED_HOSTS` allows. The default, `*.bigeye.com`, covers `app.bigeye.com` and dedicated `<company>.bigeye.com` stacks. It doesn't follow redirects.
 
@@ -85,7 +87,11 @@ For users, `username` is the subject slug; for virtual accounts and agents, the 
 
 ### Policy mode
 
-Keep `evaluate_policy` false unless you rely on Bigeye policies. Per the Policy Evaluation section of Bigeye's [Access Decision API docs](https://docs.bigeye.com/docs/access-decision-api), with `evaluate_policy: true` the overall decision comes only from the policy engine: DENY if any policy matched, ALLOW otherwise. Sensitive-data findings and open issues don't count in that mode.
+Per the Policy Evaluation section of Bigeye's [Access Decision API docs](https://docs.bigeye.com/docs/access-decision-api):
+
+- With `evaluate_policy` false (the default), the verdict comes from catalog signals. Bigeye still evaluates workspace policies asynchronously after the response and shows the results in Agent Trust Hub; they don't affect the verdict.
+- With `evaluate_policy: true`, policies are enforced inline and the overall decision comes only from the policy engine: DENY if any policy matched, ALLOW otherwise. Sensitive-data findings and open issues don't count in that mode. Inline evaluation adds latency that grows with the number of workspace policies, so benchmark it against `bigeye_timeout_ms`, which must stay below the gateway's guardrail timeout.
+- Bigeye's `access.policy.always_evaluate_synchronously` Advanced Setting forces inline evaluation on every request, regardless of `evaluate_policy`.
 
 ## Runtime env
 
@@ -132,7 +138,7 @@ cp .env.example .env   # then fill in the smoke-test section
    - **URL**: `https://<wrapper-host>/mcp-pre-invoke`
    - **Auth Data**: Custom Bearer Auth, with the Bigeye API key as the token
    - **Operation**: Validate
-   - **Enforcing strategy**: `enforce_but_ignore_on_error`, so a Bigeye outage doesn't block tool calls
+   - **Enforcing strategy**: `enforce_but_ignore_on_error` while you pilot, so a Bigeye outage doesn't block tool calls. For production access to regulated data, use `enforce`, so calls are blocked when the check can't run
    - **Config**:
 
      ```json
