@@ -39,6 +39,12 @@ class AssetDecision:
     name: str
     decision: str
     signals: dict = field(default_factory=dict)
+    has_attributes: bool = True
+
+    @property
+    def uncataloged(self) -> bool:
+        """Bigeye returns an asset missing from its catalog with no decision and no attributes."""
+        return self.decision == UNSPECIFIED and not self.has_attributes
 
 
 @dataclass
@@ -50,6 +56,10 @@ class ParsedDecision:
     @property
     def unresolved_count(self) -> int:
         return len(self.unresolved)
+
+    @property
+    def uncataloged(self) -> list:
+        return [a for a in self.assets if a.uncataloged]
 
     @property
     def assets_found(self) -> int:
@@ -137,10 +147,12 @@ def _asset_decision(raw: object) -> str:
 def _asset(entry: object) -> AssetDecision:
     fields = entry if isinstance(entry, dict) else {}
     access_object = _get(fields, "accessObject", "access_object")
+    attributes = _get(fields, "accessObjectAttributes", "access_object_attributes")
     return AssetDecision(
         name=_asset_name(access_object if isinstance(access_object, dict) else {}),
         decision=_asset_decision(_get(fields, "accessDecision", "access_decision")),
-        signals=_signals(_get(fields, "accessObjectAttributes", "access_object_attributes")),
+        signals=_signals(attributes),
+        has_attributes=bool(_list(attributes)),
     )
 
 
@@ -179,12 +191,13 @@ def parse_response(data: dict) -> ParsedDecision:
 def blocking_decision(parsed: ParsedDecision, block_on: frozenset) -> Optional[str]:
     """The decision that blocks the call, or None to allow.
 
-    UNSPECIFIED in ``block_on`` also blocks when any asset is UNSPECIFIED or unresolved,
-    whatever the overall decision.
+    UNSPECIFIED in ``block_on`` also blocks when an object is unresolved or an asset isn't in
+    Bigeye's catalog, whatever the overall decision. A cataloged asset without a decision
+    doesn't block on its own, because Bigeye leaves per-asset decisions unset in policy mode.
     """
     if parsed.overall in block_on:
         return parsed.overall
-    if UNSPECIFIED in block_on and (parsed.unresolved or any(a.decision == UNSPECIFIED for a in parsed.assets)):
+    if UNSPECIFIED in block_on and (parsed.unresolved or parsed.uncataloged):
         return UNSPECIFIED
     return None
 
@@ -198,9 +211,11 @@ def block_message(parsed: ParsedDecision, decision: str) -> str:
     """Short reason naming the assets behind the blocking decision, e.g.
     ``Bigeye DENY: DB.SCHEMA.TABLE.COL (sensitive findings: 1, open issues: 0)``.
     """
-    culprits = [_describe(a) for a in parsed.assets if a.decision == decision]
     if decision == UNSPECIFIED:
+        culprits = [_describe(a) for a in parsed.uncataloged]
         culprits += [f"{name} (unresolved)" for name in parsed.unresolved]
+    else:
+        culprits = [_describe(a) for a in parsed.assets if a.decision == decision]
     if not culprits:
         return f"Bigeye {decision}"
     shown = "; ".join(culprits[:MAX_ASSETS_IN_MESSAGE])
@@ -215,6 +230,7 @@ def summary(parsed: ParsedDecision, span_id: str, latency_ms: int) -> dict:
         "overall_decision": parsed.overall,
         "assets": [{"name": a.name, "decision": a.decision} for a in parsed.assets],
         "unresolved_count": parsed.unresolved_count,
+        "uncataloged_count": len(parsed.uncataloged),
         "assets_found": parsed.assets_found,
         "latency_ms": latency_ms,
     }

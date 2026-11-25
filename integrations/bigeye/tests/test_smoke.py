@@ -312,13 +312,13 @@ UNRESOLVED_COLUMN = {"type": "ACCESS_OBJECT_TYPE_COLUMN", "externalId": FLAGGED_
         "nothing-decided",
         "unresolved-only",
         "empty-object",
-        "allow-overall-with-undecided-asset",
+        "allow-overall-with-uncataloged-asset",
         "warn-overall-with-unresolved-object",
-        "missing-overall-allow-with-undecided-asset",
+        "missing-overall-allow-with-uncataloged-asset",
     ],
 )
 @pytest.mark.parametrize("entry", ["UNSPECIFIED", "ACCESS_DECISION_UNSPECIFIED"])
-def test_block_on_unspecified_blocks_any_undecided_or_unresolved_asset(
+def test_block_on_unspecified_blocks_uncataloged_or_unresolved_asset(
     client: TestClient, bigeye: FakeBigeye, response: dict, message: str, entry: str
 ) -> None:
     bigeye.respond(body=response)
@@ -337,6 +337,39 @@ def test_block_on_unspecified_allows_when_every_asset_is_decided(client: TestCli
     r = post(client, gateway_body({"column": FLAGGED_COLUMN}, config={**CONFIG, "block_on": ["DENY", "UNSPECIFIED"]}))
     assert r.status_code == 200
     assert r.json()["verdict"] is True
+
+
+CATALOGED_CLEAN = asset(CLEAN_TABLE, None, "ACCESS_OBJECT_TYPE_TABLE", sensitivities=0, open_issues=0)
+CATALOGED_FLAGGED = asset(FLAGGED_COLUMN, None, sensitivities=0, open_issues=2)
+
+
+@pytest.mark.parametrize("evaluate_policy", [False, True], ids=["catalog-mode", "policy-mode"])
+@pytest.mark.parametrize(
+    ("response", "verdict", "message", "uncataloged"),
+    [
+        (decision_response("ALLOW", [CATALOGED_CLEAN]), True, None, 0),
+        (decision_response("ALLOW", [asset(CLEAN_TABLE, "UNSPECIFIED", "ACCESS_OBJECT_TYPE_TABLE", open_issues=0)]), True, None, 0),
+        (decision_response("DENY", [CATALOGED_FLAGGED]), False, "Bigeye DENY", 0),
+        (decision_response("ALLOW", [CATALOGED_CLEAN, asset(FLAGGED_COLUMN, None)]), False, f"Bigeye UNSPECIFIED: {FLAGGED_COLUMN}", 1),
+    ],
+    ids=["allow-without-asset-decision", "allow-explicit-unspecified", "deny-without-asset-decision", "allow-plus-uncataloged"],
+)
+def test_block_on_unspecified_ignores_missing_decisions_on_cataloged_assets(
+    client: TestClient,
+    bigeye: FakeBigeye,
+    evaluate_policy: bool,
+    response: dict,
+    verdict: bool,
+    message: Optional[str],
+    uncataloged: int,
+) -> None:
+    bigeye.respond(body=response)
+    config = {**CONFIG, "block_on": ["DENY", "UNSPECIFIED"], "evaluate_policy": evaluate_policy}
+    r = post(client, gateway_body({"column": FLAGGED_COLUMN}, config=config))
+    assert r.status_code == 200
+    assert r.json()["verdict"] is verdict
+    assert r.json().get("message") == message
+    assert r.json()["bigeye"]["uncataloged_count"] == uncataloged
 
 
 def test_overall_decision_in_block_on_takes_precedence_over_unspecified(client: TestClient, bigeye: FakeBigeye) -> None:

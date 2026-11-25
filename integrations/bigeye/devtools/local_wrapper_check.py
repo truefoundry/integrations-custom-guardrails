@@ -125,10 +125,7 @@ def expected_verdict(summary: dict, block_on: tuple) -> bool:
     """The README's block rule, recomputed from the response summary rather than taken from the wrapper."""
     if summary.get("overall_decision") in block_on:
         return False
-    assets = summary.get("assets") if isinstance(summary.get("assets"), list) else []
-    undecided = bool(summary.get("unresolved_count")) or any(
-        isinstance(a, dict) and a.get("decision") == UNSPECIFIED for a in assets
-    )
+    undecided = bool(summary.get("unresolved_count")) or bool(summary.get("uncataloged_count"))
     return not (UNSPECIFIED in block_on and undecided)
 
 
