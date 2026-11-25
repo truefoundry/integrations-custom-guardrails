@@ -144,7 +144,7 @@ One MCP tool pre-invoke rail that asks Bigeye's Access Decision API whether a to
 
 - **Endpoints**: `/health`, `/debug/loaded-config`, `POST /mcp-pre-invoke`
 - **Hook**: `mcp_tool_pre_invoke_guardrails`, scoped by a policy `mcpServers` condition (`<server>` or `<server>:<tool>`)
-- **Tests**: 209/209 pytest with Bigeye mocked; `devtools/smoke_test.py` and `devtools/local_wrapper_check.py` run against live Bigeye without a TFY tenant
+- **Tests**: 217/217 pytest with Bigeye mocked; `devtools/smoke_test.py` and `devtools/local_wrapper_check.py` run against live Bigeye without a TFY tenant
 - **Deploy**: `cd integrations/bigeye && .venv/bin/python deploy.py --wait`
 - **Repo docs**: `integrations/bigeye/README.md`; gateway YAML in `integrations/bigeye/devtools/gateway-examples/`
 
